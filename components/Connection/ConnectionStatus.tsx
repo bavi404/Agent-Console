@@ -89,9 +89,9 @@ export const ConnectionStatus = memo(function ConnectionStatus({
       {skips.length > 0 && (
         <span
           className="text-warn"
-          title="Sequence gaps the reorder buffer gave up on"
+          title="Sequence gaps detected — reconnecting to recover via RESUME"
         >
-          {skips.length} gap{skips.length === 1 ? "" : "s"} skipped
+          {skips.length} seq gap{skips.length === 1 ? "" : "s"}
         </span>
       )}
       {parseErrors > 0 && (

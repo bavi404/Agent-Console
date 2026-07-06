@@ -129,7 +129,7 @@ effects.
 
 1. **Illegal states are unrepresentable** — if it is not in `TRANSITIONS`, it
    cannot happen.
-2. **Testable** — 175 tests include a full state × event matrix.
+2. **Testable** — 187 tests include a full state × event matrix.
 3. **Framework-free** — `WebSocketManager` calls `machine.send(event)`; React
    only displays `snapshot.state`.
 4. **Reconnect attempt counter** — incremented only on `DROP`, reset on
@@ -144,6 +144,9 @@ effects.
 | `Connected` | Idle, ready for tokens or tools |
 | `Streaming` | Tokens arriving for a message |
 | `ToolCallPending` | Awaiting tool result; FSM returns to `Connected` on the **first** `TOOL_RESULT` |
+| `Reconnecting` | Backoff timer running |
+| `Resuming` | Socket open; replay in flight |
+| `Error` | Fatal protocol error; manual reconnect |
 
 **Single-outstanding-tool contract:** The FSM models one lifecycle transition per
 tool round-trip — `TOOL_CALL` enters `ToolCallPending`, and the first `TOOL_RESULT`
@@ -151,9 +154,6 @@ returns to `Connected`. Additional `TOOL_CALL` frames while pending are legal
 (self-transition) but only one result is modeled at the FSM layer. The UI tracks
 per-`callId` tool cards independently; servers should serialize tool calls or accept
 that concurrent results may desync connection lifecycle state from individual cards.
-| `Reconnecting` | Backoff timer running |
-| `Resuming` | Socket open; replay in flight |
-| `Error` | Fatal protocol error; manual reconnect |
 
 Events like `STREAM_START` are derived from **delivered** server events inside
 `WebSocketManager.advance()`, not from React.
@@ -203,16 +203,42 @@ sequenceDiagram
 
 ### Critical invariant
 
-**`connect()` resets the buffer; `doReconnect()` does not.**
+**The watermark is always preserved; only the buffer object may be replaced.**
 
-On reconnect the manager keeps the same `SequenceBuffer` watermark so
-`RESUME(lastSeq)` refers to what was actually processed, not what was merely
-received.
+| Path | Buffer object | Watermark |
+| ---- | ------------- | --------- |
+| `doReconnect()` | Same instance (held out-of-order frames kept) | `highestProcessed` unchanged |
+| `connect()` | New instance seeded at `max(startSeq, highestProcessed)` | Preserved — no replay of persisted UI state |
+| Hook remount | New manager with `startSeq` from `websocketStore.currentSeq` | Matches last delivered seq in stores |
+
+`RESUME(lastSeq)` always refers to what was actually processed in order, not what
+was merely received or buffered.
 
 ### Store survival
 
 `useWebSocket` never calls `reset()` on disconnect. The user sees the same
 transcript after a blip; only missed events are filled in.
+
+### Gap recovery (not gap skip)
+
+When the in-order head is missing, `WebSocketManager` waits (`gapPolicy`), then
+emits `seqGap` and reconnects — it never advances past a hole. Reasons recorded
+in `websocketStore.skips`:
+
+| Reason | Trigger |
+| ------ | ------- |
+| `timeout` | Gap older than `maxGapAgeMs` (default 5 s) |
+| `overflow` | More than `maxBuffer` out-of-order frames held (default 256) |
+| `malformed` | A frame at the expected `seq` failed `parseFrame` (head-of-line block) |
+
+Malformed frames at other seqs are logged as `parseError` only; they do not
+advance the watermark.
+
+### Context history bounds
+
+`contextStore` keeps the last 50 snapshots. When `follow` is false and eviction
+removes the inspected revision, `currentRev` clamps to the oldest remaining entry
+and `baselineRev` clears if it was evicted.
 
 ---
 

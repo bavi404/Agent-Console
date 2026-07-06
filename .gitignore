@@ -14,3 +14,7 @@ next-env.d.ts.timestamp
 npm-debug.log*
 .vscode/
 .idea/
+
+# Local npm overrides (project ships .npmrc for legacy-peer-deps)
+# .npmrc is committed; ignore only machine-specific overrides
+.npmrc.local

@@ -37,7 +37,7 @@ interface Held<T> {
 export interface SkippedGap {
   from: number;
   to: number;
-  reason: "overflow" | "timeout";
+  reason: "overflow" | "timeout" | "malformed";
 }
 
 export class ReorderBuffer<T extends Sequenced> {

@@ -19,7 +19,7 @@ Zustand, and run end-to-end in Node tests. ESLint enforces the boundary.
 | Lists | `@tanstack/react-virtual` |
 | Diff | Web Worker for large context snapshots (>500 KB) |
 | Highlighting | Shiki |
-| Tests | Vitest (175+ tests, >90% coverage on protocol logic) |
+| Tests | Vitest (187 tests, >90% coverage on protocol logic) |
 
 No Redux. No Context API. No AI SDK.
 
@@ -174,7 +174,10 @@ sequenceDiagram
 
   WS->>Mgr: raw frame (string)
   Mgr->>P: parseFrame
-  alt invalid frame
+  alt invalid frame at expected seq
+    P-->>Mgr: ParseError
+    Mgr->>Mgr: seqGap(malformed) → reconnect
+  else invalid frame (other seq)
     P-->>Mgr: ParseError
   else valid event
     P-->>Mgr: ServerEvent
@@ -209,7 +212,7 @@ sequenceDiagram
 | `stateMachine.ts` | Declarative transition table |
 | `heartbeat.ts` | Client liveness (silence → dead) |
 | `heartbeatManager.ts` | Server PING → client PONG (echo nonce) |
-| `webSocketManager.ts` | Composes all of the above; injectable socket/timers |
+| `webSocketManager.ts` | Composes all of the above; gap policy, remount-safe watermark |
 
 ## Data flow: socket → screen
 
@@ -259,8 +262,9 @@ row — the panel shell does not re-render at 30+ events/sec.
 
 ### Context Inspector
 
-Bounded snapshot history, recursive JSON diff (`lib/contextDiff.ts`), lazy tree
-expansion, virtualization. Large payloads diff off-thread via Web Worker.
+Bounded snapshot history (50 revisions, clamped inspector on eviction), recursive
+JSON diff (`lib/contextDiff.ts`), lazy tree expansion, virtualization. Large
+payloads diff off-thread via Web Worker.
 
 ## Project layout
 
@@ -295,6 +299,7 @@ tests/         Vitest unit tests
 | `webSocketManager.test.ts` | Connect, dedupe, heartbeat, backoff, resume |
 | `heartbeatManager.test.ts` | PING/PONG, malformed frames |
 | `reconnect.test.ts` | Store idempotency, mock RESUME replay |
+| `contextStore.test.ts` | Snapshot dedupe, revision clamp on eviction |
 | `jsonDiff.test.ts` | Recursive diff engine |
 | `streaming.test.ts` | Transcript reducer, tool lifecycle |
 | `tokenBatcher.test.ts` | rAF coalescing |

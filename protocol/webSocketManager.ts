@@ -118,6 +118,21 @@ export interface Subscription {
 
 const WS_OPEN = 1;
 
+function parseFrameSeq(raw: string): number | null {
+  try {
+    const value = JSON.parse(raw) as unknown;
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      return null;
+    }
+    const seq = (value as { seq?: unknown }).seq;
+    return typeof seq === "number" && Number.isInteger(seq) && seq >= 1
+      ? seq
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 const defaultScheduler: Scheduler = {
   setInterval: (h, ms) => setInterval(h, ms),
   clearInterval: (h) => clearInterval(h as ReturnType<typeof setInterval>),
@@ -237,8 +252,10 @@ export class WebSocketManager {
   connect(): void {
     if (this.socket) return;
     if (!this.machine.send({ type: "CONNECT" }).ok) return;
-    // Fresh connection => fresh ordering + liveness state.
-    this.buffer = new SequenceBuffer<ServerEvent>(this.startSeq);
+    // Fresh transport, but keep the highest watermark already processed by this
+    // manager so a remount/manual reconnect does not replay persisted UI state.
+    const resumeSeq = Math.max(this.startSeq, this.buffer.highestProcessed);
+    this.buffer = new SequenceBuffer<ServerEvent>(resumeSeq);
     this.heartbeat = new Heartbeat(this.heartbeatOpts, this.now());
     this.openSocket();
   }
@@ -408,6 +425,7 @@ export class WebSocketManager {
       } else {
         this.emit({ type: "parseError", error: result.error });
       }
+      this.handleMalformedSeq(data);
       return;
     }
 
@@ -446,6 +464,17 @@ export class WebSocketManager {
     }
 
     this.evaluateGapPolicy(now);
+  }
+
+  private handleMalformedSeq(data: string): void {
+    const seq = parseFrameSeq(data);
+    if (seq !== this.buffer.highestProcessed + 1) return;
+
+    this.emit({
+      type: "seqGap",
+      gap: { from: seq, to: seq, reason: "malformed" },
+    });
+    this.handleDrop();
   }
 
   /**

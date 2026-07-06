@@ -174,6 +174,20 @@ describe("WebSocketManager — connect & resume", () => {
     expect(resume).toEqual({ type: "RESUME", lastSeq: 0 });
   });
 
+  it("preserves the processed watermark across close and connect", () => {
+    const { manager, sockets } = makeManager();
+    manager.connect();
+    sockets[0]!.open();
+    sockets[0]!.deliver(token(1));
+
+    manager.close();
+    manager.connect();
+    sockets[1]!.open();
+
+    const resume = sockets[1]!.parsedSent().find((m) => m.type === "RESUME");
+    expect(resume).toEqual({ type: "RESUME", lastSeq: 1 });
+  });
+
   it("sends a USER_MESSAGE through the open socket", () => {
     const { manager, sockets } = makeManager();
     manager.connect();
@@ -304,6 +318,30 @@ describe("WebSocketManager — ordering, dedupe & last seq", () => {
     sockets[0]!.open();
     sockets[0]!.deliverRaw("{not json");
     expect(events.some((e) => e.type === "parseError")).toBe(true);
+  });
+
+  it("reconnects when a malformed frame occupies the expected seq", () => {
+    const { manager, sockets, events, scheduler } = makeManager();
+    manager.connect();
+    sockets[0]!.open();
+
+    sockets[0]!.deliverRaw(
+      JSON.stringify({ v: 1, seq: 1, ts: 0, type: "STREAM_END" }),
+    );
+
+    expect(events.some((e) => e.type === "parseError")).toBe(true);
+    expect(events).toContainEqual({
+      type: "seqGap",
+      gap: { from: 1, to: 1, reason: "malformed" },
+    });
+    expect(manager.state.state).toBe("Reconnecting");
+
+    scheduler.flushTimeouts();
+    sockets[1]!.open();
+    expect(sockets[1]!.parsedSent()).toContainEqual({
+      type: "RESUME",
+      lastSeq: 0,
+    });
   });
 
   it("moves to Error on a delivered fatal protocol error", () => {

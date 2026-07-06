@@ -11,6 +11,10 @@ export interface ContextSnapshot {
 
 const HISTORY_LIMIT = 50;
 
+function hasRevision(history: ContextSnapshot[], rev: number | null): boolean {
+  return rev !== null && history.some((entry) => entry.revision === rev);
+}
+
 interface ContextState {
   /** Bounded snapshot history, oldest first. */
   history: ContextSnapshot[];
@@ -48,7 +52,16 @@ export const useContextStore = create<ContextState>((set) => ({
       };
       const history = [...state.history, snapshot].slice(-HISTORY_LIMIT);
 
-      if (!state.follow) return { history };
+      if (!state.follow) {
+        const fallback = history[0]?.revision ?? null;
+        const currentRev = hasRevision(history, state.currentRev)
+          ? state.currentRev
+          : fallback;
+        const baselineRev = hasRevision(history, state.baselineRev)
+          ? state.baselineRev
+          : null;
+        return { history, currentRev, baselineRev };
+      }
       // Following: inspect the newest, compare against the one before it.
       return {
         history,

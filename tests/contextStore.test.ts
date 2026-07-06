@@ -29,4 +29,23 @@ describe("contextStore — snapshot replay", () => {
     expect(useContextStore.getState().history).toHaveLength(2);
     expect(useContextStore.getState().currentRev).toBe(2);
   });
+
+  it("clamps the inspected revision when bounded history evicts it", () => {
+    const store = useContextStore.getState();
+    store.applySnapshot({ seq: 1, context: { v: 1 } });
+    store.setCurrentRev(1);
+    store.setFollow(false);
+
+    for (let seq = 2; seq <= 51; seq += 1) {
+      useContextStore.getState().applySnapshot({ seq, context: { v: seq } });
+    }
+
+    const { history, currentRev, baselineRev, follow } =
+      useContextStore.getState();
+    expect(history).toHaveLength(50);
+    expect(history[0]!.revision).toBe(2);
+    expect(currentRev).toBe(2);
+    expect(baselineRev).toBeNull();
+    expect(follow).toBe(false);
+  });
 });

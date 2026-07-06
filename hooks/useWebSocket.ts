@@ -137,7 +137,13 @@ export function useWebSocket(
   // Build the manager once. URL / factory changes are intentionally ignored
   // after mount; remount the consumer to point at a new endpoint.
   const manager = useMemo(
-    () => new WebSocketManager(options),
+    () => {
+      const currentSeq = useWebSocketStore.getState().currentSeq;
+      return new WebSocketManager({
+        ...options,
+        startSeq: Math.max(options.startSeq ?? 0, currentSeq),
+      });
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
