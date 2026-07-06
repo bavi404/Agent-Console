@@ -30,9 +30,8 @@ npm install        # uses legacy-peer-deps (react-json-tree peer range)
 npm run dev        # http://localhost:3000
 ```
 
-This folder is a **standalone git repository** on branch `main` (two commits).
-Work from here directly — it is no longer meant to be tracked by the parent `~/`
-git repo.
+This folder is a **standalone git repository** on branch `main`. Work from here
+directly — it is no longer meant to be tracked by the parent `~/` git repo.
 
 The app ships with a **mock agent socket** (`lib/mockSocket.ts`) that delivers frames
 out of order, sends heartbeats, and replays on `RESUME` — so you can see the
@@ -43,7 +42,48 @@ npm run typecheck
 npm run lint
 npm test
 npm run test:coverage   # protocol logic coverage thresholds enforced
+npm run verify          # typecheck + lint + test + production build (pre-demo)
 ```
+
+## Presenting / demo walkthrough
+
+No backend required — the mock agent (`lib/mockSocket.ts`) exercises the full
+protocol stack: out-of-order tokens, tool calls, context snapshots, heartbeats,
+and `RESUME` replay on reconnect.
+
+### Before you present
+
+```bash
+npm install
+npm run verify          # must pass — 187 tests + production build
+npm run dev             # http://localhost:3000
+```
+
+Use a fresh browser tab. Within ~1 s you should see **Connected** in the header,
+an intro message in Chat, and revision `1` in Context.
+
+### 5-minute demo script
+
+| Step | What to do | What to point out |
+| ---- | ---------- | ----------------- |
+| 1 | Open the app | Three panels: Chat, Timeline, Context. Header shows connection state + `seq #`. |
+| 2 | Read the intro | Mock agent streams tokens **out of order**; `SequenceBuffer` reorders before any store write. |
+| 3 | Send a message (e.g. `weather in Tokyo`) | Streaming tokens, two tool cards (`search_web`, `fetch_page`), timeline rows appear in order. |
+| 4 | Click a timeline row | Cross-panel highlight — chat scrolls to the matching message/tool. |
+| 5 | Open Context panel | Revision picker + diff (green/red/yellow). Toggle **follow latest** off and pick an older rev. |
+| 6 | (Optional) Click **Retry now** while connected, or throttle network in DevTools | **Reconnecting** banner; transcript preserved; `RESUME` replays only missed seqs. |
+
+### Talking points
+
+- **`protocol/` is pure TypeScript** — 187 unit tests, >90% coverage, zero React imports (ESLint-enforced).
+- **Strict ordering** — `SequenceBuffer` never skips seqs; gap policy reconnects instead of corrupting state.
+- **Render budget** — `TokenBatcher` + per-row subscriptions + virtualization keep UI smooth at 30+ TOKEN/s.
+- **Architecture docs** — [DECISIONS.md](./DECISIONS.md) explains Zustand, FSM, replay, and scaling.
+
+### Swap in a real backend
+
+In `app/page.tsx`, remove `socketFactory: mockSocketFactory` and set `url` to your
+WebSocket endpoint. The same `WebSocketManager` and stores handle the wire protocol.
 
 ## Architecture
 
@@ -291,8 +331,9 @@ tests/         Vitest unit tests
 | `npm run build` | Production build |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run lint` | ESLint + protocol import boundary |
-| `npm test` | Vitest |
+| `npm test` | Vitest (187 tests) |
 | `npm run test:coverage` | Coverage with 90% thresholds on protocol logic |
+| `npm run verify` | Full pre-demo check: typecheck, lint, test, build |
 
 ## Tests
 

@@ -5,6 +5,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useTimelineStore } from "@/stores/timelineStore";
 import type { TraceFilter } from "@/stores/timelineStore";
 import { useSelectionStore } from "@/stores/selectionStore";
+import { useWebSocketStore } from "@/stores/websocketStore";
 import { TimelineRow } from "@/components/Timeline/TimelineRow";
 
 const FILTERS: { id: TraceFilter; label: string }[] = [
@@ -83,6 +84,7 @@ export function TimelinePanel() {
   const filter = useTimelineStore((s) => s.filter);
   const setQuery = useTimelineStore((s) => s.setQuery);
   const setFilter = useTimelineStore((s) => s.setFilter);
+  const connection = useWebSocketStore((s) => s.connection);
 
   const scrollTarget = useSelectionStore((s) => s.scrollTarget);
   const scrollNonce = useSelectionStore((s) => s.scrollNonce);
@@ -152,7 +154,11 @@ export function TimelinePanel() {
       >
         {visibleIds.length === 0 ? (
           <p className="p-2 text-sm text-ink-faint">
-            {order.length === 0 ? "No timeline activity yet." : "No matches."}
+            {order.length === 0
+              ? connection === "Connecting" || connection === "Disconnected"
+                ? "Waiting for agent activity…"
+                : "No timeline activity yet."
+              : "No matches."}
           </p>
         ) : (
           <div

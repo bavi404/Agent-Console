@@ -143,14 +143,14 @@ export function ContextPanel() {
 
   return (
     <div className="flex h-full flex-col">
-      <Controls />
+      {history.length > 0 && <Controls />}
 
       <div
         ref={parentRef}
         className="min-h-0 flex-1 overflow-auto p-1 font-mono text-xs"
       >
         {history.length === 0 ? (
-          <p className="p-2 text-ink-faint">Context is empty.</p>
+          <p className="p-2 text-ink-faint">Waiting for context snapshot…</p>
         ) : (
           <div
             style={{

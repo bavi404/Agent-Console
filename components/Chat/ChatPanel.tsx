@@ -5,6 +5,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useChatStore } from "@/stores/chatStore";
 import { TranscriptRow } from "@/components/Chat/TranscriptRow";
 import { useSelectionStore } from "@/stores/selectionStore";
+import { useWebSocketStore } from "@/stores/websocketStore";
 
 /**
  * Chat transcript with virtualized rows.
@@ -20,6 +21,7 @@ import { useSelectionStore } from "@/stores/selectionStore";
 export function ChatPanel({ onSend }: { onSend: (text: string) => void }) {
   const order = useChatStore((s) => s.order);
   const selectedId = useSelectionStore((s) => s.selectedId);
+  const connection = useWebSocketStore((s) => s.connection);
 
   const [draft, setDraft] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -84,7 +86,11 @@ export function ChatPanel({ onSend }: { onSend: (text: string) => void }) {
     <div className="flex h-full flex-col">
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto p-4">
         {order.length === 0 ? (
-          <p className="text-sm text-ink-faint">No messages yet.</p>
+          <p className="text-sm text-ink-faint">
+            {connection === "Connecting" || connection === "Disconnected"
+              ? "Connecting to agent…"
+              : "No messages yet. Send a message to start the demo."}
+          </p>
         ) : (
           <div
             style={{
