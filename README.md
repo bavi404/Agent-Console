@@ -30,6 +30,10 @@ npm install        # uses legacy-peer-deps (react-json-tree peer range)
 npm run dev        # http://localhost:3000
 ```
 
+This folder is a **standalone git repository** on branch `main` (two commits).
+Work from here directly — it is no longer meant to be tracked by the parent `~/`
+git repo.
+
 The app ships with a **mock agent socket** (`lib/mockSocket.ts`) that delivers frames
 out of order, sends heartbeats, and replays on `RESUME` — so you can see the
 protocol layer working without a backend.
