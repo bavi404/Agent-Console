@@ -28,14 +28,25 @@ function Panel({
   );
 }
 
+// Point at a real backend by setting NEXT_PUBLIC_AGENT_WS_URL (see backend/).
+// When unset, the in-browser mock agent runs — no server or keys needed.
+const REAL_WS_URL = process.env.NEXT_PUBLIC_AGENT_WS_URL;
+
 export default function Page() {
-  // Swap `socketFactory` for a real endpoint by removing it and setting `url`.
-  const { send, retryNow } = useWebSocket({
-    url: "wss://mock.agent.local/stream",
-    socketFactory: mockSocketFactory,
-    heartbeat: { intervalMs: 10000, timeoutMs: 30000 },
-    pollMs: 1000,
-  });
+  const { send, retryNow } = useWebSocket(
+    REAL_WS_URL
+      ? {
+          url: REAL_WS_URL,
+          heartbeat: { intervalMs: 20000, timeoutMs: 60000 },
+          pollMs: 1000,
+        }
+      : {
+          url: "wss://mock.agent.local/stream",
+          socketFactory: mockSocketFactory,
+          heartbeat: { intervalMs: 10000, timeoutMs: 30000 },
+          pollMs: 1000,
+        },
+  );
 
   return (
     <div className="flex h-screen flex-col gap-3 p-3">

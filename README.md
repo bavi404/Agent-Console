@@ -37,6 +37,11 @@ The app ships with a **mock agent socket** (`lib/mockSocket.ts`) that delivers f
 out of order, sends heartbeats, and replays on `RESUME` — so you can see the
 protocol layer working without a backend.
 
+Want a **real LLM** instead? A drop-in backend lives in [`backend/`](./backend)
+and speaks the same wire protocol using **Ollama (local, no key)** or
+**Gemini (free key)**, with real tools (calculator + Wikipedia). See
+[Real agent backend](#real-agent-backend) below.
+
 ```bash
 npm run typecheck
 npm run lint
@@ -45,45 +50,89 @@ npm run test:coverage   # protocol logic coverage thresholds enforced
 npm run verify          # typecheck + lint + test + production build (pre-demo)
 ```
 
-## Presenting / demo walkthrough
+## Demo walkthrough
 
-No backend required — the mock agent (`lib/mockSocket.ts`) exercises the full
-protocol stack: out-of-order tokens, tool calls, context snapshots, heartbeats,
-and `RESUME` replay on reconnect.
+No backend required — a **scripted demo** runs in the browser (`lib/demoScenario.ts` +
+`lib/mockSocket.ts`). Same result every run.
 
-### Before you present
+**Use case:** research assistant — *"Who was Ada Lovelace and what is 2^20?"*
+→ `calculator` tool → `wikipedia_lookup` tool → synthesized answer. Tokens still
+arrive out of order; context snapshots evolve; timeline and diff panels light up.
 
 ```bash
 npm install
-npm run verify          # must pass — 187 tests + production build
+npm run verify          # typecheck + lint + test + production build
 npm run dev             # http://localhost:3000
 ```
 
-Use a fresh browser tab. Within ~1 s you should see **Connected** in the header,
-an intro message in Chat, and revision `1` in Context.
+Within ~1 s you should see **Connected**, an intro in Chat, and revision `1` in
+Context. The input is prefilled — press **Enter** to send.
 
-### 5-minute demo script
+| Step | What to do | What to notice |
+| ---- | ---------- | -------------- |
+| 1 | Open the app | Chat, Timeline, Context; header shows connection state + `seq #`. |
+| 2 | Press **Enter** (or Send) | Out-of-order tokens; `calculator` then `wikipedia_lookup`; context rev bumps. |
+| 3 | Click a timeline row | Cross-panel highlight into chat. |
+| 4 | Open Context | Revision picker + diff; toggle **follow latest** off to inspect older revs. |
+| 5 | Optional: **Retry now** / throttle network | Reconnecting; transcript preserved; `RESUME` replays only missed seqs. |
 
-| Step | What to do | What to point out |
-| ---- | ---------- | ----------------- |
-| 1 | Open the app | Three panels: Chat, Timeline, Context. Header shows connection state + `seq #`. |
-| 2 | Read the intro | Mock agent streams tokens **out of order**; `SequenceBuffer` reorders before any store write. |
-| 3 | Send a message (e.g. `weather in Tokyo`) | Streaming tokens, two tool cards (`search_web`, `fetch_page`), timeline rows appear in order. |
-| 4 | Click a timeline row | Cross-panel highlight — chat scrolls to the matching message/tool. |
-| 5 | Open Context panel | Revision picker + diff (green/red/yellow). Toggle **follow latest** off and pick an older rev. |
-| 6 | (Optional) Click **Retry now** while connected, or throttle network in DevTools | **Reconnecting** banner; transcript preserved; `RESUME` replays only missed seqs. |
+Architecture notes: [DECISIONS.md](./DECISIONS.md).
 
-### Talking points
+## Real agent backend
 
-- **`protocol/` is pure TypeScript** — 187 unit tests, >90% coverage, zero React imports (ESLint-enforced).
-- **Strict ordering** — `SequenceBuffer` never skips seqs; gap policy reconnects instead of corrupting state.
-- **Render budget** — `TokenBatcher` + per-row subscriptions + virtualization keep UI smooth at 30+ TOKEN/s.
-- **Architecture docs** — [DECISIONS.md](./DECISIONS.md) explains Zustand, FSM, replay, and scaling.
+By default the UI uses the in-browser scripted agent. Optionally point it at a
+real LLM backend that emits the same wire-protocol frames.
 
-### Swap in a real backend
+### 1. Start the backend
 
-In `app/page.tsx`, remove `socketFactory: mockSocketFactory` and set `url` to your
-WebSocket endpoint. The same `WebSocketManager` and stores handle the wire protocol.
+```bash
+cd backend
+npm install
+cp .env.example .env
+```
+
+**Ollama (local, free, no key)** — install [ollama.com](https://ollama.com), then:
+
+```bash
+ollama pull llama3.1        # tool-capable model
+npm run dev                 # PROVIDER=ollama is the default
+```
+
+**Gemini (free key)** — get one at
+[aistudio.google.com/apikey](https://aistudio.google.com/apikey):
+
+```bash
+# in backend/.env:  PROVIDER=gemini  and  GEMINI_API_KEY=...
+npm run dev
+```
+
+The server listens on `ws://localhost:8787`.
+
+### 2. Point the UI at it
+
+```bash
+# in the project root
+cp .env.local.example .env.local     # NEXT_PUBLIC_AGENT_WS_URL=ws://localhost:8787
+npm run dev
+```
+
+Ask something like `what is 128 * 47?` or `who was Ada Lovelace?` to see real
+streaming tokens, tool calls, and results. Delete `.env.local` to return to the
+scripted demo.
+
+### No model handy?
+
+```bash
+cd backend && npm run smoke      # full tool-calling loop against a fake provider
+```
+
+See [backend/README.md](./backend/README.md) for details, tools, and deployment.
+
+### Swap in any other backend
+
+Set `NEXT_PUBLIC_AGENT_WS_URL` to any endpoint that speaks the wire protocol in
+[`protocol/types.ts`](./protocol/types.ts). The `WebSocketManager` and stores are
+unchanged.
 
 ## Architecture
 

@@ -6,6 +6,7 @@ import { useChatStore } from "@/stores/chatStore";
 import { TranscriptRow } from "@/components/Chat/TranscriptRow";
 import { useSelectionStore } from "@/stores/selectionStore";
 import { useWebSocketStore } from "@/stores/websocketStore";
+import { DEMO_PROMPT } from "@/lib/demoScenario";
 
 /**
  * Chat transcript with virtualized rows.
@@ -22,9 +23,21 @@ export function ChatPanel({ onSend }: { onSend: (text: string) => void }) {
   const order = useChatStore((s) => s.order);
   const selectedId = useSelectionStore((s) => s.selectedId);
   const connection = useWebSocketStore((s) => s.connection);
+  const demoReady =
+    connection === "Connected" ||
+    connection === "Streaming" ||
+    connection === "ToolCallPending";
 
   const [draft, setDraft] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
+  const prefilled = useRef(false);
+
+  // Prefill the scripted question once connected — press Enter on camera, no demo chrome.
+  useEffect(() => {
+    if (!demoReady || prefilled.current) return;
+    prefilled.current = true;
+    setDraft(DEMO_PROMPT);
+  }, [demoReady]);
 
   const virtualizer = useVirtualizer({
     count: order.length,
@@ -89,7 +102,7 @@ export function ChatPanel({ onSend }: { onSend: (text: string) => void }) {
           <p className="text-sm text-ink-faint">
             {connection === "Connecting" || connection === "Disconnected"
               ? "Connecting to agent…"
-              : "No messages yet. Send a message to start the demo."}
+              : "No messages yet."}
           </p>
         ) : (
           <div
@@ -136,7 +149,7 @@ export function ChatPanel({ onSend }: { onSend: (text: string) => void }) {
               }
             }}
             rows={1}
-            placeholder="Message the agent…  (Enter to send)"
+            placeholder="Message the agent…"
             className="max-h-32 flex-1 resize-none rounded-md border border-edge bg-bg-raised px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none"
           />
           <button

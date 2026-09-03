@@ -17,6 +17,11 @@ import type {
   ServerEvent,
 } from "@/protocol/types";
 import type { WebSocketLike } from "@/protocol/webSocketManager";
+import {
+  DEMO_INTRO,
+  DEMO_WIKI_RESULT,
+  isDemoPrompt,
+} from "@/lib/demoScenario";
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown
   ? Omit<T, K>
@@ -77,7 +82,11 @@ export class MockAgentSocket implements WebSocketLike {
   private timers = new Set<ReturnType<typeof setTimeout>>();
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   private closed = false;
-  private context: JsonObject = { session: "mock", turns: 0 };
+  private context: JsonObject = {
+    session: "demo",
+    scenario: "research-assistant",
+    turns: 0,
+  };
 
   constructor() {
     this.after(120, () => {
@@ -190,15 +199,7 @@ export class MockAgentSocket implements WebSocketLike {
 
   private runIntro(): void {
     this.snapshot(0);
-    this.deliver(
-      this.token(
-        "m0",
-        "assistant",
-        'Connected to the mock agent. Ask me anything — try "weather".',
-        0,
-      ),
-      250,
-    );
+    this.deliver(this.token("m0", "assistant", DEMO_INTRO, 0), 250);
     this.deliver(
       {
         type: "STREAM_END",
@@ -211,91 +212,137 @@ export class MockAgentSocket implements WebSocketLike {
   }
 
   private runReply(prompt: string): void {
+    if (isDemoPrompt(prompt)) {
+      this.runDemoScenario(prompt);
+      return;
+    }
+    this.runDemoNudge();
+  }
+
+  /**
+   * Scripted research-assistant flow: calculator → wikipedia → synthesis.
+   * Same frames every run — tuned for a demo recording.
+   */
+  private runDemoScenario(prompt: string): void {
     const base = Date.now();
     const msgId = `m-${base}`;
-    const call1 = `call-${base}-1`;
-    const call2 = `call-${base}-2`;
+    const calcCall = `call-${base}-calc`;
+    const wikiCall = `call-${base}-wiki`;
+
     this.context = {
       ...this.context,
       turns: Number(this.context.turns ?? 0) + 1,
       lastQuery: prompt,
     };
 
-    const tokenA = this.token(msgId, "assistant", "Let me ", 0);
-    const tokenB = this.token(msgId, "assistant", "look into ", 1);
-    const tokenC = this.token(msgId, "assistant", `"${prompt}". `, 2);
-    this.deliver(tokenA, 250);
-    this.deliver(tokenC, 380);
-    this.deliver(tokenB, 520);
+    // Out-of-order token delivery (exercises SequenceBuffer) with human-paced
+    // gaps so a recording has time to show the UI reacting.
+    const t0 = this.token(msgId, "assistant", "Let me ", 0);
+    const t1 = this.token(msgId, "assistant", "split that into two checks: ", 1);
+    const t2 = this.token(msgId, "assistant", "the calculation first, ", 2);
+    const t3 = this.token(msgId, "assistant", "then a source-backed summary. ", 3);
+    this.deliver(t0, 450);
+    this.deliver(t2, 900);
+    this.deliver(t1, 1350);
+    this.deliver(t3, 1850);
 
     this.deliver(
       {
         type: "TOOL_CALL",
         seq: this.session.nextSeq(),
-        callId: call1,
-        name: "search_web",
-        args: { query: prompt, top_k: 3 },
+        callId: calcCall,
+        name: "calculator",
+        args: { expression: "2^20" },
       },
-      700,
+      2600,
     );
     this.deliver(
       {
         type: "TOOL_RESULT",
         seq: this.session.nextSeq(),
-        callId: call1,
+        callId: calcCall,
         ok: true,
-        result: {
-          hits: [
-            { title: "Result A", score: 0.91 },
-            { title: "Result B", score: 0.74 },
-          ],
-        },
-        durationMs: 640,
+        result: { expression: "2^20", result: 1048576 },
+        durationMs: 920,
       },
-      1400,
+      3800,
     );
 
-    this.context = { ...this.context, results: { count: 2 } };
-    this.snapshot(1450);
-
-    this.deliver(
-      this.token(msgId, "assistant", "Top hit looks promising — ", 3),
-      1600,
-    );
-
-    this.deliver(
-      {
-        type: "TOOL_CALL",
-        seq: this.session.nextSeq(),
-        callId: call2,
-        name: "fetch_page",
-        args: { url: "https://example.com/result-a" },
-      },
-      1750,
-    );
-    this.deliver(
-      {
-        type: "TOOL_RESULT",
-        seq: this.session.nextSeq(),
-        callId: call2,
-        ok: true,
-        result: { status: 200, words: 1280 },
-        durationMs: 410,
-      },
-      2400,
-    );
-
-    this.context = { ...this.context, fetched: true };
-    this.snapshot(2450);
+    this.context = {
+      ...this.context,
+      lastTool: "calculator",
+      calcResult: 1048576,
+    };
+    this.snapshot(3900);
 
     this.deliver(
       this.token(
         msgId,
         "assistant",
-        "based on what I found, here's a concise answer.",
+        "2^20 is 1,048,576. ",
         4,
       ),
-      2600,
+      4550,
+    );
+    this.deliver(
+      this.token(
+        msgId,
+        "assistant",
+        "Now I will look up Ada Lovelace so the answer has a source. ",
+        5,
+      ),
+      5250,
+    );
+
+    this.deliver(
+      {
+        type: "TOOL_CALL",
+        seq: this.session.nextSeq(),
+        callId: wikiCall,
+        name: "wikipedia_lookup",
+        args: { query: "Ada Lovelace" },
+      },
+      6100,
+    );
+    this.deliver(
+      {
+        type: "TOOL_RESULT",
+        seq: this.session.nextSeq(),
+        callId: wikiCall,
+        ok: true,
+        result: DEMO_WIKI_RESULT,
+        durationMs: 1450,
+      },
+      7800,
+    );
+
+    this.context = {
+      ...this.context,
+      lastTool: "wikipedia_lookup",
+      subject: "Ada Lovelace",
+      sources: 1,
+    };
+    this.snapshot(7900);
+
+    this.deliver(
+      this.token(
+        msgId,
+        "assistant",
+        "Ada Lovelace was a 19th-century mathematician known for her notes on " +
+          "Babbage's Analytical Engine. ",
+        6,
+      ),
+      8600,
+    );
+    this.deliver(
+      this.token(
+        msgId,
+        "assistant",
+        "She is often described as the first computer programmer, and the " +
+          "calculation result is 1,048,576.",
+        7,
+      ),
+      9500,
     );
     this.deliver(
       {
@@ -304,7 +351,30 @@ export class MockAgentSocket implements WebSocketLike {
         messageId: msgId,
         reason: "complete",
       },
-      2750,
+      10100,
+    );
+  }
+
+  /** Gentle redirect when the user types something other than the demo prompt. */
+  private runDemoNudge(): void {
+    const msgId = `m-nudge-${Date.now()}`;
+    this.deliver(
+      this.token(
+        msgId,
+        "assistant",
+        'Try: "Who was Ada Lovelace and what is 2^20?"',
+        0,
+      ),
+      200,
+    );
+    this.deliver(
+      {
+        type: "STREAM_END",
+        seq: this.session.nextSeq(),
+        messageId: msgId,
+        reason: "complete",
+      },
+      350,
     );
   }
 }
