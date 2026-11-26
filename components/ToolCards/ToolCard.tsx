@@ -2,13 +2,25 @@
 
 import { memo, useEffect, useState } from "react";
 import { highlightJson, safeStringify } from "@/lib/highlight";
-import type { ToolCardStatus } from "@/lib/streaming";
+import {
+  isInFlightToolStatus,
+  type ToolStatus,
+} from "@/protocol/toolStatus";
+import {
+  TOOL_STATUS_BADGE,
+  TOOL_STATUS_DOT,
+  TOOL_STATUS_LABEL,
+} from "./toolStatusStyle";
 
 /** Normalized view model shared by the chat transcript and the timeline tree. */
 export interface ToolCardView {
   name: string;
   args: unknown;
-  status: ToolCardStatus;
+  status: ToolStatus;
+  /** Delivery: TOOL_ACK sent. Omitted where not tracked (timeline). */
+  acknowledged?: boolean;
+  detail?: string;
+  progress?: number;
   result?: unknown;
   error?: string;
   durationMs?: number;
@@ -35,21 +47,6 @@ function useHighlightedJson(value: unknown): string | null {
   return html;
 }
 
-const STATUS_STYLE: Record<ToolCardStatus, string> = {
-  pending: "bg-bg-hover text-ink-faint",
-  acknowledged: "bg-accent-soft text-accent",
-  running: "bg-warn/15 text-warn",
-  completed: "bg-ok/15 text-ok",
-  error: "bg-err/15 text-err",
-};
-
-/** Statuses for which the tool is still in flight (no result yet). */
-const IN_FLIGHT: ReadonlySet<ToolCardStatus> = new Set([
-  "pending",
-  "acknowledged",
-  "running",
-]);
-
 /** Shiki highlight is async — memoized so parent re-renders don't restart it. */
 const CodeBlock = memo(function CodeBlock({ value }: { value: unknown }) {
   const html = useHighlightedJson(value);
@@ -68,6 +65,37 @@ const CodeBlock = memo(function CodeBlock({ value }: { value: unknown }) {
   );
 });
 
+/** Live progress note / bar for an in-flight tool. */
+function ToolProgress({
+  detail,
+  progress,
+}: {
+  detail: string | undefined;
+  progress: number | undefined;
+}) {
+  return (
+    <div className="mb-2 space-y-1">
+      {detail !== undefined && (
+        <div className="text-xs text-ink-dim">{detail}</div>
+      )}
+      {progress !== undefined && (
+        <div
+          className="h-1 overflow-hidden rounded bg-bg-hover"
+          role="progressbar"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(progress * 100)}
+        >
+          <div
+            className="h-full bg-warn transition-[width] duration-300"
+            style={{ width: `${Math.round(progress * 100)}%` }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * Tool invocation card.
  *
@@ -76,7 +104,7 @@ const CodeBlock = memo(function CodeBlock({ value }: { value: unknown }) {
  */
 export const ToolCard = memo(
   function ToolCard({ tool }: { tool: ToolCardView }) {
-  const inFlight = IN_FLIGHT.has(tool.status);
+  const inFlight = isInFlightToolStatus(tool.status);
 
   return (
     <div className="rounded-md border border-edge bg-bg-raised p-3">
@@ -84,20 +112,32 @@ export const ToolCard = memo(
         <div className="flex items-center gap-2">
           {inFlight && (
             <span
-              className={`inline-block h-1.5 w-1.5 rounded-full ${tool.status === "running" ? "animate-pulse-dot bg-warn" : "bg-ink-faint"}`}
+              className={`inline-block h-1.5 w-1.5 rounded-full ${TOOL_STATUS_DOT[tool.status]}`}
             />
           )}
           <span className="font-mono text-sm text-ink">{tool.name}</span>
           <span
-            className={`rounded px-1.5 py-0.5 text-[10px] font-medium uppercase ${STATUS_STYLE[tool.status]}`}
+            className={`rounded px-1.5 py-0.5 text-[10px] font-medium uppercase ${TOOL_STATUS_BADGE[tool.status]}`}
           >
-            {tool.status}
+            {TOOL_STATUS_LABEL[tool.status]}
           </span>
+          {tool.acknowledged === false && (
+            <span
+              className="text-[10px] text-ink-faint"
+              title="TOOL_ACK not yet sent"
+            >
+              unacked
+            </span>
+          )}
         </div>
         {tool.durationMs !== undefined && (
           <span className="text-xs text-ink-faint">{tool.durationMs}ms</span>
         )}
       </div>
+
+      {inFlight && (tool.detail !== undefined || tool.progress !== undefined) && (
+        <ToolProgress detail={tool.detail} progress={tool.progress} />
+      )}
 
       <div className="space-y-2">
         <div>
@@ -107,7 +147,7 @@ export const ToolCard = memo(
           <CodeBlock value={tool.args} />
         </div>
 
-        {tool.status === "error" ? (
+        {tool.status === "failed" ? (
           <div>
             <div className="mb-1 text-[10px] uppercase tracking-wide text-err">
               Error
@@ -115,6 +155,11 @@ export const ToolCard = memo(
             <pre className="overflow-x-auto rounded-md border border-err/30 bg-err/5 p-2.5 text-xs text-err">
               {tool.error ?? "Unknown error"}
             </pre>
+          </div>
+        ) : tool.status === "cancelled" ? (
+          <div className="text-xs text-ink-dim">
+            Cancelled before completion
+            {tool.detail !== undefined ? ` — ${tool.detail}` : ""}.
           </div>
         ) : tool.result !== undefined ? (
           <div>
@@ -131,6 +176,9 @@ export const ToolCard = memo(
   (prev, next) =>
     prev.tool.name === next.tool.name &&
     prev.tool.status === next.tool.status &&
+    prev.tool.acknowledged === next.tool.acknowledged &&
+    prev.tool.detail === next.tool.detail &&
+    prev.tool.progress === next.tool.progress &&
     prev.tool.args === next.tool.args &&
     prev.tool.result === next.tool.result &&
     prev.tool.error === next.tool.error &&

@@ -3,6 +3,7 @@
  *
  * Implements WebSocketLike and simulates a real agent session with:
  *   - out-of-order token delivery (reorder buffer exercise)
+ *   - explicit TOOL_STATUS updates (queued → running with progress → result)
  *   - PING heartbeats
  *   - RESUME replay of all events after `lastSeq` (reconnect exercise)
  *
@@ -17,6 +18,7 @@ import type {
   ServerEvent,
 } from "@/protocol/types";
 import type { WebSocketLike } from "@/protocol/webSocketManager";
+import type { ToolStatus } from "@/protocol/toolStatus";
 import {
   DEMO_INTRO,
   DEMO_WIKI_RESULT,
@@ -186,6 +188,20 @@ export class MockAgentSocket implements WebSocketLike {
     };
   }
 
+  private toolStatus(
+    call: { callId: string; name: string; args: unknown },
+    status: ToolStatus,
+    extra: { detail?: string; progress?: number } = {},
+  ): Frame {
+    return {
+      type: "TOOL_STATUS",
+      seq: this.session.nextSeq(),
+      ...call,
+      status,
+      ...extra,
+    };
+  }
+
   private snapshot(atMs: number): void {
     this.deliver(
       {
@@ -246,16 +262,13 @@ export class MockAgentSocket implements WebSocketLike {
     this.deliver(t1, 1350);
     this.deliver(t3, 1850);
 
-    this.deliver(
-      {
-        type: "TOOL_CALL",
-        seq: this.session.nextSeq(),
-        callId: calcCall,
-        name: "calculator",
-        args: { expression: "2^20" },
-      },
-      2600,
-    );
+    const calc = {
+      callId: calcCall,
+      name: "calculator",
+      args: { expression: "2^20" },
+    };
+    this.deliver({ type: "TOOL_CALL", seq: this.session.nextSeq(), ...calc }, 2600);
+    this.deliver(this.toolStatus(calc, "running"), 2950);
     this.deliver(
       {
         type: "TOOL_RESULT",
@@ -294,15 +307,25 @@ export class MockAgentSocket implements WebSocketLike {
       5250,
     );
 
+    const wiki = {
+      callId: wikiCall,
+      name: "wikipedia_lookup",
+      args: { query: "Ada Lovelace" },
+    };
+    this.deliver({ type: "TOOL_CALL", seq: this.session.nextSeq(), ...wiki }, 6100);
     this.deliver(
-      {
-        type: "TOOL_CALL",
-        seq: this.session.nextSeq(),
-        callId: wikiCall,
-        name: "wikipedia_lookup",
-        args: { query: "Ada Lovelace" },
-      },
-      6100,
+      this.toolStatus(wiki, "running", {
+        detail: "Searching Wikipedia",
+        progress: 0.25,
+      }),
+      6450,
+    );
+    this.deliver(
+      this.toolStatus(wiki, "running", {
+        detail: "Fetching article summary",
+        progress: 0.7,
+      }),
+      7150,
     );
     this.deliver(
       {

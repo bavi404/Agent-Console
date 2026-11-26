@@ -63,28 +63,25 @@ function routeMessage(
       timeline.endMessage(event.messageId);
       break;
     case "TOOL_CALL": {
-      const existing = chat.items[event.callId];
-      const isNew = !existing;
-      if (isNew) chat.addToolCall(event);
-
-      const acked = send({ type: "TOOL_ACK", callId: event.callId });
-      const needsLifecycle =
-        isNew ||
-        (existing?.kind === "tool" && existing.status === "pending");
-
-      if (acked && needsLifecycle) {
+      // Both writes are idempotent by callId, so a replayed TOOL_CALL never
+      // resets a card the server has already advanced.
+      chat.addToolCall(event);
+      timeline.applyToolCall({
+        callId: event.callId,
+        name: event.name,
+        args: event.args,
+        seq: event.seq,
+      });
+      // Delivery ack only — execution status comes from the server.
+      if (send({ type: "TOOL_ACK", callId: event.callId })) {
         chat.acknowledgeToolCall(event.callId);
-        chat.runToolCall(event.callId);
-        batcher.flush();
-        if (isNew) {
-          timeline.applyToolCall({
-            callId: event.callId,
-            name: event.name,
-            args: event.args,
-            seq: event.seq,
-          });
-        }
       }
+      batcher.flush();
+      break;
+    }
+    case "TOOL_STATUS": {
+      chat.applyToolStatus(event);
+      timeline.applyToolStatus(event);
       break;
     }
     case "TOOL_RESULT": {

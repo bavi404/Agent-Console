@@ -129,7 +129,7 @@ effects.
 
 1. **Illegal states are unrepresentable** — if it is not in `TRANSITIONS`, it
    cannot happen.
-2. **Testable** — 187 tests include a full state × event matrix.
+2. **Testable** — 214 tests include a full state × event matrix.
 3. **Framework-free** — `WebSocketManager` calls `machine.send(event)`; React
    only displays `snapshot.state`.
 4. **Reconnect attempt counter** — incremented only on `DROP`, reset on
@@ -143,7 +143,7 @@ effects.
 | `Connecting` | Opening first socket |
 | `Connected` | Idle, ready for tokens or tools |
 | `Streaming` | Tokens arriving for a message |
-| `ToolCallPending` | Awaiting tool result; FSM returns to `Connected` on the **first** `TOOL_RESULT` |
+| `ToolCallPending` | Awaiting tool result; FSM returns to `Connected` on the **first** `TOOL_RESULT` or terminal `TOOL_STATUS` (e.g. `cancelled`) |
 | `Reconnecting` | Backoff timer running |
 | `Resuming` | Socket open; replay in flight |
 | `Error` | Fatal protocol error; manual reconnect |
@@ -197,7 +197,7 @@ sequenceDiagram
 | ----- | --------- |
 | Transport | `SequenceBuffer` rejects `seq <= highestProcessed` |
 | Chat | `applyToken` ignores tokens where `index !== tokenCount` |
-| Tools | `addToolCall` is idempotent by `callId` |
+| Tools | `addToolCall` is idempotent by `callId`; tool statuses only move forward (`protocol/toolStatus.ts`) |
 | Timeline | `ensureMessage` no-ops if node exists |
 | Mock server | `mockSession.replayAfter(lastSeq)` filters session log |
 
@@ -382,7 +382,8 @@ correctness to how many DOM nodes exist.
 | ----- | ------ |
 | Reconnect backoff | Fixed schedule 500 ms → 10 s cap (`lib/reconnectBackoff.ts`) |
 | Heartbeat | Server PING → client PONG; client silence → drop; malformed PING logged, never disconnect |
-| Tool delivery | `TOOL_ACK` on every `TOOL_CALL`; cards idempotent by `callId` |
+| Tool delivery | `TOOL_ACK` on every `TOOL_CALL`; cards idempotent by `callId`; ack tracked separately from execution status |
+| Tool execution status | Server-owned via `TOOL_STATUS` (`queued → running → succeeded/failed/cancelled`); monotonic and self-describing (name + args on every frame) |
 | Context diff | Recursive `lib/contextDiff.ts` + flat `lib/jsonDiff.ts` for inspector |
 | Testing | Injectable socket/clock/scheduler; 90%+ coverage thresholds on protocol logic |
 | ESLint boundary | `protocol/` cannot import React — CI-enforced |

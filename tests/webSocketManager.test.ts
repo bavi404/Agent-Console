@@ -400,6 +400,30 @@ describe("WebSocketManager — ordering, dedupe & last seq", () => {
     expect(messageSeqs(events)).toEqual([1, 2, 3, 4, 5, 6]);
   });
 
+  it("leaves ToolCallPending on a terminal TOOL_STATUS but not on running", () => {
+    const { manager, sockets } = makeManager();
+    manager.connect();
+    sockets[0]!.open();
+    const status = (seq: number, st: string): Record<string, unknown> =>
+      frame(seq, "TOOL_STATUS", {
+        callId: "c1",
+        name: "search",
+        args: { q: "x" },
+        status: st,
+      });
+
+    sockets[0]!.deliver(toolCall(1));
+    sockets[0]!.deliver(status(2, "running"));
+    expect(manager.state.state).toBe("ToolCallPending");
+
+    sockets[0]!.deliver(status(3, "cancelled"));
+    expect(manager.state.state).toBe("Connected");
+
+    // A stray TOOL_RESULT after cancellation is an illegal FSM move: ignored.
+    sockets[0]!.deliver(toolResult(4));
+    expect(manager.state.state).toBe("Connected");
+  });
+
   it("ignores non-string socket payloads", () => {
     const { manager, sockets, events } = makeManager();
     manager.connect();

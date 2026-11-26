@@ -19,7 +19,7 @@ Zustand, and run end-to-end in Node tests. ESLint enforces the boundary.
 | Lists | `@tanstack/react-virtual` |
 | Diff | Web Worker for large context snapshots (>500 KB) |
 | Highlighting | Shiki |
-| Tests | Vitest (187 tests, >90% coverage on protocol logic) |
+| Tests | Vitest (214 tests, >90% coverage on protocol logic) |
 
 No Redux. No Context API. No AI SDK.
 
@@ -292,8 +292,34 @@ sequenceDiagram
 
 ### Wire schema (`protocol/types.ts`)
 
-**Server events:** `TOKEN`, `TOOL_CALL`, `TOOL_RESULT`, `STREAM_END`,
-`CONTEXT_SNAPSHOT`, `PING`, `ERROR`
+**Server events:** `TOKEN`, `TOOL_CALL`, `TOOL_STATUS`, `TOOL_RESULT`,
+`STREAM_END`, `CONTEXT_SNAPSHOT`, `PING`, `ERROR`
+
+#### Tool-call events
+
+Tool execution is reported explicitly by the server. The client never infers
+"running" on its own.
+
+```
+queued ──▶ running ──▶ succeeded | failed
+   └──────────┴──────▶ cancelled
+```
+
+| Frame | Carries | Meaning |
+| ----- | ------- | ------- |
+| `TOOL_CALL` | `callId`, `name`, `args` | Tool announced; status is `queued` |
+| `TOOL_STATUS` | `callId`, `name`, `args`, `status`, `detail?`, `progress?` (0–1) | Explicit status change or progress tick |
+| `TOOL_RESULT` | `callId`, `ok`, `result?` / `error?`, `durationMs` | Output; sets `succeeded` / `failed` |
+
+`TOOL_STATUS` is self-describing. It carries the tool name and arguments, so
+a client can render the call even if it is the first frame seen for that
+`callId`. Lifecycle rules live in `protocol/toolStatus.ts` and are shared by
+the chat and timeline stores. Statuses only move forward, terminal statuses
+are final, and repeated `running` frames update `detail`/`progress`. Replayed
+or late frames therefore never move a card backwards. `cancelled` has no
+`TOOL_RESULT` and ends the `ToolCallPending` FSM state on its own. `TOOL_ACK`
+is delivery-only: tool cards track it as a separate `acknowledged` flag, not
+as an execution status.
 
 **Client messages:** `USER_MESSAGE`, `PONG`, `TOOL_ACK`, `RESUME`
 
@@ -380,7 +406,7 @@ tests/         Vitest unit tests
 | `npm run build` | Production build |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run lint` | ESLint + protocol import boundary |
-| `npm test` | Vitest (187 tests) |
+| `npm test` | Vitest (214 tests) |
 | `npm run test:coverage` | Coverage with 90% thresholds on protocol logic |
 | `npm run verify` | Full pre-demo check: typecheck, lint, test, build |
 
@@ -396,6 +422,7 @@ tests/         Vitest unit tests
 | `contextStore.test.ts` | Snapshot dedupe, revision clamp on eviction |
 | `jsonDiff.test.ts` | Recursive diff engine |
 | `streaming.test.ts` | Transcript reducer, tool lifecycle |
+| `toolStatus.test.ts` | Tool status rules, `TOOL_STATUS` parsing, timeline tool nodes |
 | `tokenBatcher.test.ts` | rAF coalescing |
 | `protocolLogic.test.ts` | Parser, type guards, liveness |
 

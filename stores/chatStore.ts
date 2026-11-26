@@ -1,22 +1,23 @@
 import { create } from "zustand";
 import type { ChatRole } from "@/protocol/types";
+import type { ToolStatus } from "@/protocol/toolStatus";
 import {
   acknowledgeToolCall,
   addLocalMessage,
   addToolCall,
   applyToken,
+  applyToolStatus,
   completeToolCall,
   emptyTranscript,
   endStream,
   failActiveStream,
-  runToolCall,
   type TranscriptState,
 } from "@/lib/streaming";
 
 export type {
   ChatMessage,
   ToolCard,
-  ToolCardStatus,
+  ToolStatus,
   TranscriptItem,
   StreamStatus,
 } from "@/lib/streaming";
@@ -31,7 +32,14 @@ interface ChatActions {
   endStream: (event: { messageId: string }) => void;
   addToolCall: (event: { callId: string; name: string; args: unknown }) => void;
   acknowledgeToolCall: (callId: string) => void;
-  runToolCall: (callId: string) => void;
+  applyToolStatus: (event: {
+    callId: string;
+    name: string;
+    args: unknown;
+    status: ToolStatus;
+    detail?: string;
+    progress?: number;
+  }) => void;
   completeToolCall: (event: {
     callId: string;
     ok: boolean;
@@ -63,7 +71,8 @@ export const useChatStore = create<ChatState>((set) => ({
   acknowledgeToolCall: (callId) =>
     set((state) => acknowledgeToolCall(state, callId)),
 
-  runToolCall: (callId) => set((state) => runToolCall(state, callId)),
+  applyToolStatus: (event) =>
+    set((state) => applyToolStatus(state, { ...event, now: Date.now() })),
 
   completeToolCall: (event) => set((state) => completeToolCall(state, event)),
 

@@ -80,13 +80,20 @@ asserts strict seq ordering, and checks RESUME replay — no LLM required.
 The model decides when to call them; results are emitted as `TOOL_RESULT`
 frames and fed back into the conversation for a final answer.
 
+A tool's `run(args, ctx)` may call `ctx.report({ detail, progress })` to
+publish progress. Each call becomes a `TOOL_STATUS` `running` frame, with
+`progress` clamped to [0, 1]. `wikipedia_lookup` uses it for its search and
+summary steps.
+
 ## How it maps to the protocol
 
 | Model event | Wire frame |
 | ----------- | ---------- |
 | text delta | `TOKEN` (index increments) |
-| wants a tool | `TOOL_CALL` |
+| wants a tool | `TOOL_CALL` (status `queued`; a batch is announced together) |
+| tool starts / reports progress | `TOOL_STATUS` `running` (+ `detail`, `progress`) |
 | tool finished | `TOOL_RESULT` (+ `CONTEXT_SNAPSHOT`) |
+| tools requested on the last allowed round | `TOOL_STATUS` `cancelled` (not executed) |
 | turn complete | `STREAM_END` |
 | provider/network error | `ERROR` (non-fatal) |
 | every 15s | `PING` (client answers `PONG`) |

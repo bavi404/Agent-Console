@@ -11,12 +11,24 @@ export interface ToolParameter {
   description: string;
 }
 
+/** A progress update a tool may report while it runs (→ TOOL_STATUS "running"). */
+export interface ToolProgress {
+  detail?: string;
+  /** Completion fraction in [0, 1]. */
+  progress?: number;
+}
+
+/** Runtime hooks handed to a tool. Optional to use; tools may ignore it. */
+export interface ToolContext {
+  report: (update: ToolProgress) => void;
+}
+
 export interface ToolSpec {
   name: string;
   description: string;
   parameters: Record<string, ToolParameter>;
   required: string[];
-  run: (args: Record<string, unknown>) => Promise<unknown>;
+  run: (args: Record<string, unknown>, ctx: ToolContext) => Promise<unknown>;
 }
 
 /* --------------------------------- calculator ---------------------------- */
@@ -102,7 +114,11 @@ interface WikiSummary {
   url: string;
 }
 
-async function wikipediaLookup(query: string): Promise<WikiSummary> {
+async function wikipediaLookup(
+  query: string,
+  ctx: ToolContext,
+): Promise<WikiSummary> {
+  ctx.report({ detail: "Searching Wikipedia", progress: 0.25 });
   const searchUrl =
     "https://en.wikipedia.org/w/api.php?" +
     new URLSearchParams({
@@ -122,6 +138,7 @@ async function wikipediaLookup(query: string): Promise<WikiSummary> {
   const title = searchJson.query?.search?.[0]?.title;
   if (!title) throw new Error(`No Wikipedia article found for "${query}"`);
 
+  ctx.report({ detail: `Fetching summary for "${title}"`, progress: 0.7 });
   const summaryUrl =
     "https://en.wikipedia.org/api/rest_v1/page/summary/" +
     encodeURIComponent(title);
@@ -172,7 +189,7 @@ export const TOOLS: ToolSpec[] = [
       },
     },
     required: ["query"],
-    run: async (args) => wikipediaLookup(String(args.query ?? "")),
+    run: async (args, ctx) => wikipediaLookup(String(args.query ?? ""), ctx),
   },
 ];
 
