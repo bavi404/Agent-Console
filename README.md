@@ -19,7 +19,7 @@ Zustand, and run end-to-end in Node tests. ESLint enforces the boundary.
 | Lists | `@tanstack/react-virtual` |
 | Diff | Web Worker for large context snapshots (>500 KB) |
 | Highlighting | Shiki |
-| Tests | Vitest (219 tests, >90% coverage on protocol logic) |
+| Tests | Vitest (236 tests, >90% coverage on protocol logic) |
 
 No Redux. No Context API. No AI SDK.
 
@@ -69,6 +69,10 @@ A second scripted prompt, *"Clean up the temp files on the server."*, shows the
 **tool policy**: the agent requests `shell_exec`, the call is `denied`
 (rule `tool-access`) before it executes, and the agent explains what it can do
 instead.
+
+A third, *"Email the summary to my team."*, shows **human approval**. The
+agent proposes `send_email` and the call waits as **needs approval** until you
+click Approve or Reject on the card, or 60 s pass. Each outcome is scripted.
 
 Within ~1 s you should see **Connected**, an intro in Chat, and revision `1` in
 Context. The input is prefilled — press **Enter** to send.
@@ -306,15 +310,16 @@ Tool execution is reported explicitly by the server. The client never infers
 "running" on its own.
 
 ```
-queued ──▶ running ──▶ succeeded | failed
-   ├──────────┴──────▶ cancelled
-   └─────────────────▶ denied      (blocked by the server's tool policy)
+queued ──▶ awaiting_approval ──▶ running ──▶ succeeded | failed
+   │              ├──▶ rejected     │         (a human said no)
+   ├──────────────┴─────────────────┴──────▶ cancelled
+   └──────────────────────────────────────▶ denied   (blocked by policy)
 ```
 
 | Frame | Carries | Meaning |
 | ----- | ------- | ------- |
 | `TOOL_CALL` | `callId`, `name`, `args` | Tool announced; status is `queued` |
-| `TOOL_STATUS` | `callId`, `name`, `args`, `status`, `detail?`, `progress?` (0–1), `policyRule?` | Explicit status change or progress tick |
+| `TOOL_STATUS` | `callId`, `name`, `args`, `status`, `detail?`, `progress?` (0–1), `policyRule?`, `expiresAt?`, `approval?` | Explicit status change or progress tick |
 | `TOOL_RESULT` | `callId`, `ok`, `result?` / `error?`, `durationMs` | Output; sets `succeeded` / `failed` |
 
 `TOOL_STATUS` is self-describing. It carries the tool name and arguments, so
@@ -322,15 +327,43 @@ a client can render the call even if it is the first frame seen for that
 `callId`. Lifecycle rules live in `protocol/toolStatus.ts` and are shared by
 the chat and timeline stores. Statuses only move forward, terminal statuses
 are final, and repeated `running` frames update `detail`/`progress`. Replayed
-or late frames therefore never move a card backwards. `cancelled` and
-`denied` mean the tool never ran. They have no `TOOL_RESULT`, a late one is
+or late frames therefore never move a card backwards. `cancelled`,
+`denied` and `rejected` mean the tool never ran. They have no `TOOL_RESULT`, a late one is
 ignored, and they end the `ToolCallPending` FSM state on their own. A
 `denied` frame carries the reason in `detail` and the rule ID in
 `policyRule`. The card shows both under **Blocked by policy**. `TOOL_ACK`
 is delivery-only: tool cards track it as a separate `acknowledged` flag, not
 as an execution status.
 
-**Client messages:** `USER_MESSAGE`, `PONG`, `TOOL_ACK`, `RESUME`
+#### Human approval
+
+When the server's policy requires sign-off, a call moves to
+`awaiting_approval`. That frame carries the reason (`detail`), the rule
+(`policyRule`) and a deadline (`expiresAt`). The card shows **Approve** and
+**Reject** buttons, an optional note, and a countdown. The decision goes back
+as a client message:
+
+```json
+{ "type": "TOOL_APPROVAL", "callId": "…", "decision": "approve" | "reject", "reason": "optional note" }
+```
+
+Only the server decides the outcome. It answers with `TOOL_STATUS`:
+
+| Outcome | Status | `approval` |
+| ------- | ------ | ---------- |
+| Approved | `running` (then the normal result) | `approved` |
+| Rejected | `rejected` (`detail` = your note); not executed | `rejected` |
+| No decision before `expiresAt` | `cancelled`; not executed | `expired` |
+| Connection closed while waiting | `cancelled` | — |
+
+The first decision wins. Duplicate and late decisions are ignored. Until the
+server confirms, the client keeps your click in `stores/approvalStore.ts`, not
+in the transcript, so a card never shows a status the server hasn't sent. On
+reconnect, unconfirmed clicks are cleared so you can decide again. `approval`
+and `policyRule` stay on the card once set, so "✓ approved" is still shown
+after the tool succeeds.
+
+**Client messages:** `USER_MESSAGE`, `PONG`, `TOOL_ACK`, `TOOL_APPROVAL`, `RESUME`
 
 | Module | Role |
 | ------ | ---- |
@@ -415,7 +448,7 @@ tests/         Vitest unit tests
 | `npm run build` | Production build |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run lint` | ESLint + protocol import boundary |
-| `npm test` | Vitest (219 tests) |
+| `npm test` | Vitest (236 tests) |
 | `npm run test:coverage` | Coverage with 90% thresholds on protocol logic |
 | `npm run verify` | Full pre-demo check: typecheck, lint, test, build |
 
@@ -432,6 +465,8 @@ tests/         Vitest unit tests
 | `jsonDiff.test.ts` | Recursive diff engine |
 | `streaming.test.ts` | Transcript reducer, tool lifecycle |
 | `toolStatus.test.ts` | Tool status rules, `TOOL_STATUS` parsing, timeline tool nodes |
+| `approvalStore.test.ts` | Client-side approval decisions |
+| `approvalScenario.test.ts` | Mock approve / reject / expire / reconnect flows |
 | `tokenBatcher.test.ts` | rAF coalescing |
 | `protocolLogic.test.ts` | Parser, type guards, liveness |
 

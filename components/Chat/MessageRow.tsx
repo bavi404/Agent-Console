@@ -1,7 +1,24 @@
 "use client";
 
 import { memo } from "react";
+import { useChatStore } from "@/stores/chatStore";
 import type { ChatMessage, StreamStatus } from "@/stores/chatStore";
+import { hasToolAwaitingApproval } from "@/lib/streaming";
+
+/** Paused-stream note: names the human when the pause is theirs to end. */
+function PausedIndicator() {
+  const awaitingYou = useChatStore(hasToolAwaitingApproval);
+  return (
+    <span
+      className={`ml-1.5 inline-flex items-center gap-1 align-middle text-[11px] ${awaitingYou ? "text-accent" : "text-warn"}`}
+    >
+      <span
+        className={`inline-block h-1.5 w-1.5 animate-pulse-dot rounded-full ${awaitingYou ? "bg-accent" : "bg-warn"}`}
+      />
+      {awaitingYou ? "waiting for your approval…" : "waiting on tool…"}
+    </span>
+  );
+}
 
 /** Role chip — memoized because role never changes after mount. */
 const RoleBadge = memo(function RoleBadge({
@@ -37,14 +54,7 @@ const StreamCursor = memo(function StreamCursor({
       <span className="ml-0.5 inline-block h-4 w-1.5 translate-y-0.5 animate-pulse-dot bg-accent align-middle" />
     );
   }
-  if (status === "paused") {
-    return (
-      <span className="ml-1.5 inline-flex items-center gap-1 align-middle text-[11px] text-warn">
-        <span className="inline-block h-1.5 w-1.5 animate-pulse-dot rounded-full bg-warn" />
-        waiting on tool…
-      </span>
-    );
-  }
+  if (status === "paused") return <PausedIndicator />;
   if (status === "error") {
     return (
       <span className="ml-1.5 align-middle text-[11px] text-err">

@@ -64,7 +64,7 @@ back to the mock agent.
 
 ```bash
 npm run smoke        # runs the full agent loop against a fake provider
-npm test             # policy rules, engine, config, agent integration
+npm test             # policy, approval gate, agent integration
 npm run typecheck
 ```
 
@@ -107,6 +107,31 @@ Default rules, in evaluation order:
 | `argument-size` | serialized arguments exceed `TOOL_POLICY_MAX_ARG_CHARS` (2000) |
 | `argument-schema` | a required argument is missing or blank, or has the wrong type |
 | `call-limit` | the turn already used `TOOL_POLICY_MAX_CALLS` (8) calls, or `TOOL_POLICY_MAX_CALLS_PER_TOOL` (4) for this tool |
+| `human-approval` | *(never denies)* requires approval for tools in `TOOL_POLICY_REQUIRE_APPROVAL` |
+
+### Human approval
+
+Set `TOOL_POLICY_REQUIRE_APPROVAL` to a comma-separated list of tools. Each
+call to one of those tools waits for a decision from the console:
+
+```bash
+TOOL_POLICY_REQUIRE_APPROVAL=wikipedia_lookup
+TOOL_POLICY_APPROVAL_TIMEOUT_MS=120000   # default: 2 minutes
+```
+
+- **Approved:** the call runs normally, with `approval: "approved"` on its
+  `running` status.
+- **Rejected:** the call never runs. The status is `rejected`, and your note
+  is passed to the model.
+- **Expired:** the call never runs. The status is `cancelled` with
+  `approval: "expired"`.
+- **Socket closed:** the pending call is cancelled.
+
+A denial from any rule beats an approval requirement, so you are never asked
+to approve a call that would be blocked anyway. Approval-gated calls count
+toward the turn limits only if they actually run. The waiting itself lives
+in `src/approvalGate.ts`, which has no protocol or agent knowledge and
+injectable timers.
 
 Only allowed calls count toward the limits. Counters reset on every user
 message and are kept separately for each connection. Invalid env values stop
@@ -115,7 +140,9 @@ the server at startup.
 `blockedArgumentPatterns` is also available but is not in the default
 policy. It denies calls whose string arguments match a regex. To add your own
 rule, implement `PolicyRule` (`{ id, check(call, ctx) }`, returning a
-denial or `null`) and pass it in the list given to `new PolicyEngine(...)`.
+finding or `null`) and pass it in the list given to `new PolicyEngine(...)`. A
+finding is `{ rule, reason, effect? }`, where `effect` is `"deny"` (the default)
+or `"require_approval"`.
 
 ## How it maps to the protocol
 
@@ -126,6 +153,8 @@ denial or `null`) and pass it in the list given to `new PolicyEngine(...)`.
 | tool starts / reports progress | `TOOL_STATUS` `running` (+ `detail`, `progress`) |
 | tool finished | `TOOL_RESULT` (+ `CONTEXT_SNAPSHOT`) |
 | tool blocked by policy | `TOOL_STATUS` `denied` (+ `detail` reason, `policyRule`) — not executed |
+| tool needs human sign-off | `TOOL_STATUS` `awaiting_approval` (+ `detail`, `policyRule`, `expiresAt`) |
+| human approved / rejected / no decision | `running` + `approval: "approved"` / `rejected` / `cancelled` + `approval: "expired"` |
 | tools requested on the last allowed round | `TOOL_STATUS` `cancelled` (not executed) |
 | turn complete | `STREAM_END` |
 | provider/network error | `ERROR` (non-fatal) |

@@ -162,3 +162,32 @@ export function blockedArgumentPatterns(
     },
   };
 }
+
+/* ------------------------------ human approval --------------------------- */
+
+export interface RequireApprovalOptions {
+  /** Tools that need a human's sign-off before every execution. */
+  tools: readonly string[];
+  /** Shown to the human; defaults to a generic explanation. */
+  reason?: string;
+}
+
+/** Require human approval before the listed tools run. Never denies. */
+export function requireApproval({
+  tools,
+  reason,
+}: RequireApprovalOptions): PolicyRule {
+  const gated = new Set(tools);
+  return {
+    id: "human-approval",
+    check(call) {
+      if (!gated.has(call.name)) return null;
+      return {
+        rule: "human-approval",
+        effect: "require_approval",
+        reason:
+          reason ?? `"${call.name}" requires your approval before it runs.`,
+      };
+    },
+  };
+}

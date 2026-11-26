@@ -24,9 +24,16 @@ function truncate(text: string, max = 80): string {
   return text.length > max ? text.slice(0, max) + "…" : text;
 }
 
+/**
+ * One-line preview. Usually a primitive, but `prevValue` can be an object or
+ * array when a key changes type (e.g. `{…}` → null), so summarize those
+ * instead of printing "[object Object]".
+ */
 function formatPrimitive(value: DiffNode["value"]): string {
   if (typeof value === "string") return `"${truncate(value)}"`;
   if (value === null) return "null";
+  if (Array.isArray(value)) return `[…${value.length}]`;
+  if (typeof value === "object") return `{…${Object.keys(value).length}}`;
   return String(value);
 }
 

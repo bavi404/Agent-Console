@@ -33,7 +33,7 @@ function TranscriptRowImpl({ id }: { id: string }) {
       {item.kind === "message" ? (
         <MessageRow message={item} />
       ) : (
-        <ToolCard tool={item} />
+        <ToolCard tool={{ ...item, callId: item.id }} />
       )}
     </div>
   );

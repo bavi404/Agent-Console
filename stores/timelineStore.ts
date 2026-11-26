@@ -6,7 +6,7 @@ import {
   mergeToolStatus,
   shouldApplyToolStatus,
   toolStatusFromResult,
-  type ToolStatus,
+  type ToolStatusFields,
 } from "@/protocol/toolStatus";
 
 /**
@@ -39,16 +39,12 @@ export interface MessageNode {
   streaming: boolean;
 }
 
-export interface ToolNode {
+export interface ToolNode extends ToolStatusFields {
   id: string; // callId
   kind: "tool";
   seq: number;
   name: string;
   args: unknown;
-  status: ToolStatus;
-  detail?: string;
-  progress?: number;
-  policyRule?: string;
   result?: unknown;
   error?: string;
   durationMs?: number;
@@ -143,16 +139,14 @@ interface TimelineState {
     args: unknown;
     seq: number;
   }) => void;
-  applyToolStatus: (input: {
-    callId: string;
-    name: string;
-    args: unknown;
-    status: ToolStatus;
-    detail?: string;
-    progress?: number;
-    policyRule?: string;
-    seq: number;
-  }) => void;
+  applyToolStatus: (
+    input: ToolStatusFields & {
+      callId: string;
+      name: string;
+      args: unknown;
+      seq: number;
+    },
+  ) => void;
   applyToolResult: (input: {
     callId: string;
     ok: boolean;

@@ -132,17 +132,11 @@ function TimelineRowImpl({ id }: { id: string }) {
 }
 
 function toCardView(node: ToolNode): ToolCardView {
-  return {
-    name: node.name,
-    args: node.args,
-    status: node.status,
-    ...(node.detail !== undefined ? { detail: node.detail } : {}),
-    ...(node.progress !== undefined ? { progress: node.progress } : {}),
-    ...(node.policyRule !== undefined ? { policyRule: node.policyRule } : {}),
-    ...(node.result !== undefined ? { result: node.result } : {}),
-    ...(node.error !== undefined ? { error: node.error } : {}),
-    ...(node.durationMs !== undefined ? { durationMs: node.durationMs } : {}),
-  };
+  // Everything but the timeline-only fields (kind, id, seq).
+  const { kind: _kind, id, seq: _seq, ...view } = node;
+  void _kind;
+  void _seq;
+  return { ...view, callId: id };
 }
 
 export const TimelineRow = memo(TimelineRowImpl);

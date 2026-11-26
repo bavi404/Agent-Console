@@ -56,3 +56,31 @@ export const POLICY_DEMO_DENIAL = {
   rule: "tool-access",
   reason: 'Tool "shell_exec" is not on the allowlist.',
 } as const;
+
+/* ------------------------- human-approval scenario ------------------------ */
+
+/**
+ * Third scripted prompt: the agent wants to run a side-effecting tool, the
+ * policy requires a human's sign-off, and the call waits in the console for
+ * Approve / Reject (or expires).
+ */
+export const APPROVAL_DEMO_PROMPT = "Email the summary to my team.";
+
+export function isApprovalDemoPrompt(text: string): boolean {
+  const n = text.trim().toLowerCase().replace(/\s+/g, " ");
+  return n === APPROVAL_DEMO_PROMPT.toLowerCase() || n.includes("email");
+}
+
+/** Mirrors the backend's `human-approval` rule wording. */
+export const APPROVAL_DEMO = {
+  tool: "send_email",
+  args: {
+    to: "team@example.com",
+    subject: "Summary: Ada Lovelace",
+    body: "Ada Lovelace (1815–1852) wrote the first published algorithm.",
+  },
+  rule: "human-approval",
+  reason: '"send_email" requires your approval before it runs.',
+  timeoutMs: 60_000,
+  result: { sent: true, recipients: 1, messageId: "msg-demo-001" },
+} as const;

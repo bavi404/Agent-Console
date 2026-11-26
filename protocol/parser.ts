@@ -10,7 +10,7 @@ import type {
   ServerEventType as ServerEventTypeT,
 } from "./types";
 import { PROTOCOL_VERSION, ServerEventType } from "./types";
-import { isToolStatus } from "./toolStatus";
+import { isApprovalOutcome, isToolStatus } from "./toolStatus";
 
 const KNOWN_TYPES: ReadonlySet<string> = new Set(
   Object.values(ServerEventType),
@@ -85,6 +85,10 @@ function validatePayload(
       if (o.detail !== undefined && !str("detail")) return "detail";
       if (o.progress !== undefined && !isFraction(o.progress)) return "progress";
       if (o.policyRule !== undefined && !str("policyRule")) return "policyRule";
+      if (o.expiresAt !== undefined && !isFiniteTs(o.expiresAt))
+        return "expiresAt";
+      if (o.approval !== undefined && !isApprovalOutcome(o.approval))
+        return "approval";
       return null;
     case ServerEventType.STREAM_END:
       if (!str("messageId")) return "messageId";

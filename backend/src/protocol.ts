@@ -58,7 +58,12 @@ export type ToolStatus =
   | "succeeded"
   | "failed"
   | "cancelled"
-  | "denied";
+  | "denied"
+  | "awaiting_approval"
+  | "rejected";
+
+/** How a human-approval request resolved. Mirrors the frontend. */
+export type ApprovalOutcome = "approved" | "rejected" | "expired";
 
 /** Explicit, self-describing execution-status update for a tool call. */
 export interface ToolStatusEvent extends ServerBase {
@@ -70,8 +75,12 @@ export interface ToolStatusEvent extends ServerBase {
   detail?: string;
   /** Completion fraction in [0, 1]. */
   progress?: number;
-  /** For status "denied": id of the policy rule that blocked the call. */
+  /** For "denied" / "awaiting_approval": the policy rule responsible. */
   policyRule?: string;
+  /** For "awaiting_approval": decision deadline (epoch ms). */
+  expiresAt?: number;
+  /** Set when an approval request resolves. */
+  approval?: ApprovalOutcome;
 }
 
 export interface StreamEndEvent extends ServerBase {
@@ -132,6 +141,12 @@ export interface ToolAckMessage {
   type: "TOOL_ACK";
   callId: string;
 }
+export interface ToolApprovalMessage {
+  type: "TOOL_APPROVAL";
+  callId: string;
+  decision: "approve" | "reject";
+  reason?: string;
+}
 export interface ResumeMessage {
   type: "RESUME";
   lastSeq: number;
@@ -141,6 +156,7 @@ export type ClientMessage =
   | UserMessage
   | PongMessage
   | ToolAckMessage
+  | ToolApprovalMessage
   | ResumeMessage;
 
 export function parseClientMessage(raw: string): ClientMessage | null {
@@ -165,6 +181,14 @@ export function parseClientMessage(raw: string): ClientMessage | null {
       return typeof (json as ToolAckMessage).callId === "string"
         ? (json as ToolAckMessage)
         : null;
+    case "TOOL_APPROVAL": {
+      const m = json as Partial<ToolApprovalMessage>;
+      return typeof m.callId === "string" &&
+        (m.decision === "approve" || m.decision === "reject") &&
+        (m.reason === undefined || typeof m.reason === "string")
+        ? (json as ToolApprovalMessage)
+        : null;
+    }
     case "RESUME":
       return Number.isFinite((json as ResumeMessage).lastSeq)
         ? (json as ResumeMessage)

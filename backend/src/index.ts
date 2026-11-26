@@ -42,17 +42,19 @@ console.log(
 console.log(
   `[agent-console] tool policy: max ${policyConfig.maxCalls} calls/turn, ` +
     `${policyConfig.maxCallsPerTool}/tool, args ≤ ${policyConfig.maxArgChars} chars` +
-    (policyConfig.deny.length ? `, disabled: ${policyConfig.deny.join(", ")}` : ""),
+    (policyConfig.deny.length ? `, disabled: ${policyConfig.deny.join(", ")}` : "") +
+    (policyConfig.requireApproval.length
+      ? `, approval required: ${policyConfig.requireApproval.join(", ")}`
+      : ""),
 );
 
 wss.on("connection", (socket: WebSocket) => {
   const session = new Session();
   // One policy engine per connection: turn counters are per session.
-  const agent = new Agent(
-    session,
-    provider,
-    createToolPolicy(TOOLS, policyConfig),
-  );
+  const agent = new Agent(session, provider, {
+    policy: createToolPolicy(TOOLS, policyConfig),
+    approvalTimeoutMs: policyConfig.approvalTimeoutMs,
+  });
   let nonce = 0;
   let busy = false;
 
@@ -111,6 +113,10 @@ wss.on("connection", (socket: WebSocket) => {
           });
         break;
       }
+      case "TOOL_APPROVAL":
+        // First decision wins; duplicates / late clicks are ignored.
+        agent.decideToolCall(msg.callId, msg.decision, msg.reason);
+        break;
       case "RESUME":
         session.replayAfter(msg.lastSeq);
         break;
@@ -121,7 +127,10 @@ wss.on("connection", (socket: WebSocket) => {
     }
   });
 
-  socket.on("close", () => clearInterval(heartbeat));
+  socket.on("close", () => {
+    clearInterval(heartbeat);
+    agent.dispose("Connection closed");
+  });
   socket.on("error", () => clearInterval(heartbeat));
 });
 

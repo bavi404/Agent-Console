@@ -14,7 +14,7 @@
  *    `unknown` (e.g. straight off `JSON.parse`).
  */
 
-import type { ToolStatus } from "./toolStatus";
+import type { ApprovalOutcome, ToolDecision, ToolStatus } from "./toolStatus";
 
 export const PROTOCOL_VERSION = 1 as const;
 
@@ -114,6 +114,16 @@ export interface ToolStatusEvent extends ServerBase {
    * call (e.g. "tool-access"). `detail` carries the human-readable reason.
    */
   policyRule?: string;
+  /**
+   * For status "awaiting_approval": deadline (epoch ms) after which the server
+   * stops waiting and cancels the call.
+   */
+  expiresAt?: number;
+  /**
+   * Set when a human-approval request resolves: "approved" (with status
+   * "running"), "rejected" (with "rejected"), or "expired" (with "cancelled").
+   */
+  approval?: ApprovalOutcome;
 }
 
 /** A message stream finished. */
@@ -161,6 +171,7 @@ export const ClientMessageType = {
   USER_MESSAGE: "USER_MESSAGE",
   PONG: "PONG",
   TOOL_ACK: "TOOL_ACK",
+  TOOL_APPROVAL: "TOOL_APPROVAL",
   RESUME: "RESUME",
 } as const;
 
@@ -185,6 +196,18 @@ export interface ToolAckMessage {
   callId: string;
 }
 
+/**
+ * A human's decision on a tool call in status "awaiting_approval". Only the
+ * first decision per callId counts; the server confirms it with TOOL_STATUS.
+ */
+export interface ToolApprovalMessage {
+  type: typeof ClientMessageType.TOOL_APPROVAL;
+  callId: string;
+  decision: ToolDecision;
+  /** Optional note, fed back to the model on rejection. */
+  reason?: string;
+}
+
 /** Sent on (re)connect to resume the stream after the last seen sequence. */
 export interface ResumeMessage {
   type: typeof ClientMessageType.RESUME;
@@ -195,6 +218,7 @@ export type ClientMessage =
   | UserMessage
   | PongMessage
   | ToolAckMessage
+  | ToolApprovalMessage
   | ResumeMessage;
 
 /* ------------------------------------------------------------------ */
@@ -280,5 +304,8 @@ export const isPongMessage = (m: ClientMessage): m is PongMessage =>
   m.type === ClientMessageType.PONG;
 export const isToolAckMessage = (m: ClientMessage): m is ToolAckMessage =>
   m.type === ClientMessageType.TOOL_ACK;
+export const isToolApprovalMessage = (
+  m: ClientMessage,
+): m is ToolApprovalMessage => m.type === ClientMessageType.TOOL_APPROVAL;
 export const isResumeMessage = (m: ClientMessage): m is ResumeMessage =>
   m.type === ClientMessageType.RESUME;

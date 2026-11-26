@@ -5,6 +5,8 @@
  *   - out-of-order token delivery (reorder buffer exercise)
  *   - explicit TOOL_STATUS updates (queued → running with progress → result)
  *   - a policy denial (TOOL_STATUS "denied") for the second scripted prompt
+ *   - a human-approval request (TOOL_STATUS "awaiting_approval") for the third,
+ *     resolved by TOOL_APPROVAL from the client, or expiring
  *   - PING heartbeats
  *   - RESUME replay of all events after `lastSeq` (reconnect exercise)
  *
@@ -20,12 +22,16 @@ import type {
 } from "@/protocol/types";
 import type { WebSocketLike } from "@/protocol/webSocketManager";
 import type { ToolStatus } from "@/protocol/toolStatus";
+import type { ToolStatusFields } from "@/protocol/toolStatus";
 import {
+  APPROVAL_DEMO,
+  APPROVAL_DEMO_PROMPT,
   DEMO_INTRO,
   DEMO_PROMPT,
   DEMO_WIKI_RESULT,
   POLICY_DEMO_DENIAL,
   POLICY_DEMO_PROMPT,
+  isApprovalDemoPrompt,
   isDemoPrompt,
   isPolicyDemoPrompt,
 } from "@/lib/demoScenario";
@@ -38,9 +44,19 @@ type Frame = DistributiveOmit<ServerEvent, "v" | "ts">;
 const HEARTBEAT_MS = 10000;
 
 /** Shared across socket instances — simulates server-side session memory. */
+/** A tool call parked until the user approves or rejects it. */
+interface PendingApproval {
+  messageId: string;
+  nextTokenIndex: number;
+  call: { callId: string; name: string; args: JsonObject };
+  expiresAt: number;
+}
+
 class MockSession {
   /** Every event the server has ever emitted, in ascending seq order. */
   readonly log: ServerEvent[] = [];
+  /** Survives socket replacement, like a real server's pending approvals. */
+  readonly pendingApprovals = new Map<string, PendingApproval>();
   private seq = 0;
   introPlayed = false;
 
@@ -104,6 +120,10 @@ export class MockAgentSocket implements WebSocketLike {
         this.session.introPlayed = true;
         this.runIntro();
       }
+      // Re-arm expiry for approvals still waiting from a previous socket.
+      for (const pending of this.session.pendingApprovals.values()) {
+        this.armApprovalExpiry(pending);
+      }
       this.heartbeat = setInterval(
         () =>
           this.deliver(
@@ -132,6 +152,13 @@ export class MockAgentSocket implements WebSocketLike {
         break;
       case "RESUME":
         this.replay(msg.lastSeq);
+        break;
+      case "TOOL_APPROVAL":
+        this.resolveApproval(
+          msg.callId,
+          msg.decision === "approve" ? "approved" : "rejected",
+          msg.reason,
+        );
         break;
       case "PONG":
       case "TOOL_ACK":
@@ -196,7 +223,7 @@ export class MockAgentSocket implements WebSocketLike {
   private toolStatus(
     call: { callId: string; name: string; args: unknown },
     status: ToolStatus,
-    extra: { detail?: string; progress?: number; policyRule?: string } = {},
+    extra: Omit<ToolStatusFields, "status"> = {},
   ): Frame {
     return {
       type: "TOOL_STATUS",
@@ -239,6 +266,10 @@ export class MockAgentSocket implements WebSocketLike {
     }
     if (isPolicyDemoPrompt(prompt)) {
       this.runPolicyScenario(prompt);
+      return;
+    }
+    if (isApprovalDemoPrompt(prompt)) {
+      this.runApprovalScenario(prompt);
       return;
     }
     this.runDemoNudge();
@@ -456,6 +487,147 @@ export class MockAgentSocket implements WebSocketLike {
     );
   }
 
+  /**
+   * Scripted approval flow, part 1: the agent proposes a side-effecting tool;
+   * the policy parks it as "awaiting_approval" until the user decides.
+   */
+  private runApprovalScenario(prompt: string): void {
+    const base = Date.now();
+    const pending: PendingApproval = {
+      messageId: `m-${base}`,
+      nextTokenIndex: 1,
+      call: {
+        callId: `call-${base}-email`,
+        name: APPROVAL_DEMO.tool,
+        args: { ...APPROVAL_DEMO.args },
+      },
+      expiresAt: base + 1200 + APPROVAL_DEMO.timeoutMs,
+    };
+
+    this.context = {
+      ...this.context,
+      turns: Number(this.context.turns ?? 0) + 1,
+      lastQuery: prompt,
+    };
+
+    this.deliver(
+      this.token(pending.messageId, "assistant", "I'll draft the email and send it. ", 0),
+      400,
+    );
+    this.deliver({ type: "TOOL_CALL", seq: this.session.nextSeq(), ...pending.call }, 900);
+    this.deliver(
+      this.toolStatus(pending.call, "awaiting_approval", {
+        detail: APPROVAL_DEMO.reason,
+        policyRule: APPROVAL_DEMO.rule,
+        expiresAt: pending.expiresAt,
+      }),
+      1200,
+    );
+    this.context = {
+      ...this.context,
+      pendingApproval: {
+        tool: APPROVAL_DEMO.tool,
+        callId: pending.call.callId,
+        expiresAt: pending.expiresAt,
+      },
+    };
+    this.snapshot(1250);
+
+    this.session.pendingApprovals.set(pending.call.callId, pending);
+    this.armApprovalExpiry(pending);
+  }
+
+  private armApprovalExpiry(pending: PendingApproval): void {
+    this.after(Math.max(0, pending.expiresAt - Date.now()), () =>
+      this.resolveApproval(pending.call.callId, "expired"),
+    );
+  }
+
+  /**
+   * Scripted approval flow, part 2. First resolution wins: later decisions,
+   * unknown ids, and decisions after expiry are ignored (as on the server).
+   */
+  private resolveApproval(
+    callId: string,
+    outcome: "approved" | "rejected" | "expired",
+    note?: string,
+  ): void {
+    const pending = this.session.pendingApprovals.get(callId);
+    if (!pending) return;
+    this.session.pendingApprovals.delete(callId);
+    const { call, messageId } = pending;
+    let index = pending.nextTokenIndex;
+    const say = (text: string, atMs: number): void => {
+      this.deliver(this.token(messageId, "assistant", text, index), atMs);
+      index += 1;
+    };
+    const trimmed = note?.trim();
+
+    this.context = {
+      ...this.context,
+      pendingApproval: null,
+      lastApproval: {
+        tool: call.name,
+        outcome,
+        ...(trimmed ? { note: trimmed } : {}),
+      },
+    };
+
+    if (outcome === "approved") {
+      this.deliver(
+        this.toolStatus(call, "running", {
+          approval: "approved",
+          detail: trimmed ? `Approved: ${trimmed}` : "Approved by user",
+        }),
+        150,
+      );
+      this.deliver(
+        {
+          type: "TOOL_RESULT",
+          seq: this.session.nextSeq(),
+          callId: call.callId,
+          ok: true,
+          result: { ...APPROVAL_DEMO.result },
+          durationMs: 640,
+        },
+        900,
+      );
+      this.snapshot(950);
+      say("Done — the summary was emailed to team@example.com.", 1500);
+    } else if (outcome === "rejected") {
+      this.deliver(
+        this.toolStatus(call, "rejected", {
+          approval: "rejected",
+          detail: trimmed ?? "No reason given.",
+        }),
+        150,
+      );
+      this.snapshot(200);
+      say("Understood — I didn't send the email. ", 800);
+      say("Let me know if you'd like to change the recipients or wording.", 1400);
+    } else {
+      this.deliver(
+        this.toolStatus(call, "cancelled", {
+          approval: "expired",
+          detail: `No decision within ${Math.round(APPROVAL_DEMO.timeoutMs / 1000)}s`,
+        }),
+        0,
+      );
+      this.snapshot(50);
+      say("The approval request expired, so I didn't send the email.", 600);
+    }
+
+    this.deliver(
+      {
+        type: "STREAM_END",
+        seq: this.session.nextSeq(),
+        messageId,
+        reason: "complete",
+      },
+      outcome === "approved" ? 1900 : 1800,
+    );
+  }
+
   /** Gentle redirect when the user types something other than the demo prompt. */
   private runDemoNudge(): void {
     const msgId = `m-nudge-${Date.now()}`;
@@ -463,7 +635,7 @@ export class MockAgentSocket implements WebSocketLike {
       this.token(
         msgId,
         "assistant",
-        `Try: "${DEMO_PROMPT}" — or see the tool policy block a call: "${POLICY_DEMO_PROMPT}"`,
+        `Try: "${DEMO_PROMPT}" — see the tool policy block a call: "${POLICY_DEMO_PROMPT}" — or approve one yourself: "${APPROVAL_DEMO_PROMPT}"`,
         0,
       ),
       200,

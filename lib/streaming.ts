@@ -38,7 +38,7 @@ import {
   mergeToolStatus,
   shouldApplyToolStatus,
   toolStatusFromResult,
-  type ToolStatus,
+  type ToolStatusFields,
 } from "@/protocol/toolStatus";
 
 export type { ToolStatus } from "@/protocol/toolStatus";
@@ -64,19 +64,12 @@ export interface ChatMessage {
  *                    see protocol/toolStatus.ts.
  *   - `acknowledged` delivery: whether this client has sent TOOL_ACK.
  */
-export interface ToolCard {
+export interface ToolCard extends ToolStatusFields {
   kind: "tool";
   id: string; // callId
   name: string;
   args: unknown;
-  status: ToolStatus;
   acknowledged: boolean;
-  /** Latest progress note from TOOL_STATUS. */
-  detail?: string;
-  /** Latest progress fraction in [0, 1] from TOOL_STATUS. */
-  progress?: number;
-  /** For "denied": the policy rule that blocked the call. */
-  policyRule?: string;
   result?: unknown;
   error?: string;
   durationMs?: number;
@@ -241,6 +234,15 @@ function hasToolInFlight(state: TranscriptState): boolean {
   return false;
 }
 
+/** Is any tool currently waiting for a human decision? */
+export function hasToolAwaitingApproval(state: TranscriptState): boolean {
+  for (const id of state.order) {
+    const item = state.items[id];
+    if (item?.kind === "tool" && item.status === "awaiting_approval") return true;
+  }
+  return false;
+}
+
 /** Resume the frozen stream once every tool has reached a terminal status. */
 function resumeIfToolsIdle(state: TranscriptState): TranscriptState {
   return hasToolInFlight(state) ? state : resumeActiveStream(state);
@@ -300,15 +302,11 @@ export function acknowledgeToolCall(
   return replaceTool(state, { ...tool, acknowledged: true });
 }
 
-export interface ToolStatusInput {
+export interface ToolStatusInput extends ToolStatusFields {
   callId: string;
   name: string;
   args: unknown;
-  status: ToolStatus;
-  detail?: string;
-  progress?: number;
   now: number;
-  policyRule?: string;
 }
 
 /**

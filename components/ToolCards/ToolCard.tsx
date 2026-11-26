@@ -4,28 +4,39 @@ import { memo, useEffect, useState } from "react";
 import { highlightJson, safeStringify } from "@/lib/highlight";
 import {
   isInFlightToolStatus,
-  type ToolStatus,
+  type ToolStatusFields,
 } from "@/protocol/toolStatus";
 import {
+  APPROVAL_CHIP,
   TOOL_STATUS_BADGE,
   TOOL_STATUS_DOT,
   TOOL_STATUS_LABEL,
 } from "./toolStatusStyle";
+import { ApprovalPrompt } from "./ApprovalPrompt";
 
 /** Normalized view model shared by the chat transcript and the timeline tree. */
-export interface ToolCardView {
+export interface ToolCardView extends ToolStatusFields {
+  callId: string;
   name: string;
   args: unknown;
-  status: ToolStatus;
   /** Delivery: TOOL_ACK sent. Omitted where not tracked (timeline). */
   acknowledged?: boolean;
-  detail?: string;
-  progress?: number;
-  /** For "denied": the policy rule that blocked the call. */
-  policyRule?: string;
   result?: unknown;
   error?: string;
   durationMs?: number;
+}
+
+/** Shallow equality over every view-model field (robust to new fields). */
+function sameView(a: ToolCardView, b: ToolCardView): boolean {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const key of keys) {
+    if (
+      a[key as keyof ToolCardView] !== b[key as keyof ToolCardView]
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function useHighlightedJson(value: unknown): string | null {
@@ -149,6 +160,13 @@ export const ToolCard = memo(
           >
             {TOOL_STATUS_LABEL[tool.status]}
           </span>
+          {tool.approval !== undefined && (
+            <span
+              className={`text-[10px] ${APPROVAL_CHIP[tool.approval].className}`}
+            >
+              {APPROVAL_CHIP[tool.approval].label}
+            </span>
+          )}
           {tool.acknowledged === false && (
             <span
               className="text-[10px] text-ink-faint"
@@ -163,8 +181,18 @@ export const ToolCard = memo(
         )}
       </div>
 
-      {inFlight && (tool.detail !== undefined || tool.progress !== undefined) && (
-        <ToolProgress detail={tool.detail} progress={tool.progress} />
+      {tool.status === "awaiting_approval" ? (
+        <ApprovalPrompt
+          callId={tool.callId}
+          reason={tool.detail}
+          rule={tool.policyRule}
+          expiresAt={tool.expiresAt}
+        />
+      ) : (
+        inFlight &&
+        (tool.detail !== undefined || tool.progress !== undefined) && (
+          <ToolProgress detail={tool.detail} progress={tool.progress} />
+        )
       )}
 
       <div className="space-y-2">
@@ -186,6 +214,15 @@ export const ToolCard = memo(
           </div>
         ) : tool.status === "denied" ? (
           <PolicyDenial reason={tool.detail} rule={tool.policyRule} />
+        ) : tool.status === "rejected" ? (
+          <div className="rounded-md border border-err/30 bg-err/5 p-2.5 text-xs text-err">
+            Rejected — the tool was not executed.
+            {tool.detail !== undefined && (
+              <span className="mt-1 block text-ink-dim">
+                Reason: {tool.detail}
+              </span>
+            )}
+          </div>
         ) : tool.status === "cancelled" ? (
           <div className="text-xs text-ink-dim">
             Cancelled before completion
@@ -203,15 +240,5 @@ export const ToolCard = memo(
     </div>
   );
   },
-  (prev, next) =>
-    prev.tool.name === next.tool.name &&
-    prev.tool.status === next.tool.status &&
-    prev.tool.acknowledged === next.tool.acknowledged &&
-    prev.tool.detail === next.tool.detail &&
-    prev.tool.progress === next.tool.progress &&
-    prev.tool.policyRule === next.tool.policyRule &&
-    prev.tool.args === next.tool.args &&
-    prev.tool.result === next.tool.result &&
-    prev.tool.error === next.tool.error &&
-    prev.tool.durationMs === next.tool.durationMs,
+  (prev, next) => sameView(prev.tool, next.tool),
 );

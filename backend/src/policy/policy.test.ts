@@ -8,8 +8,10 @@ import {
   maxArgumentSize,
   maxCallsPerTurn,
   policyConfigFromEnv,
+  requireApproval,
   toolAccess,
   DEFAULT_POLICY_CONFIG,
+  type PolicyDecision,
   type ToolCallRequest,
 } from "./index.js";
 import { TOOLS } from "../tools.js";
@@ -24,6 +26,16 @@ const call = (
 ): ToolCallRequest => ({ id, name, args });
 
 const ctx = { callsByTool: new Map<string, number>(), totalCalls: 0 };
+
+/** Evaluate and, if allowed, count it — as the agent does without approval. */
+function authorize(engine: PolicyEngine, c: ToolCallRequest): PolicyDecision {
+  const decision = engine.evaluate(c);
+  if (decision.outcome === "allow") engine.recordExecution(c);
+  return decision;
+}
+
+const ruleOf = (d: PolicyDecision): string | null =>
+  d.outcome === "allow" ? null : d.rule;
 
 describe("toolAccess", () => {
   const rule = toolAccess({ allow: ["calculator", "wiki"], deny: ["wiki"] });
@@ -97,20 +109,20 @@ describe("PolicyEngine", () => {
   });
 
   it("counts only allowed calls and enforces per-tool limits", () => {
-    assert.equal(engine.authorize(call("a")).allowed, true);
-    assert.equal(engine.authorize(call("a")).allowed, true);
-    const third = engine.authorize(call("a"));
-    assert.equal(third.allowed, false);
-    assert.equal(!third.allowed && third.rule, "call-limit");
-    assert.equal(engine.authorize(call("b")).allowed, true); // denial didn't count
-    assert.equal(engine.authorize(call("c")).allowed, false); // total 3 reached
+    assert.equal(authorize(engine, call("a")).outcome, "allow");
+    assert.equal(authorize(engine, call("a")).outcome, "allow");
+    const third = authorize(engine, call("a"));
+    assert.equal(third.outcome, "deny");
+    assert.equal(ruleOf(third), "call-limit");
+    assert.equal(authorize(engine, call("b")).outcome, "allow"); // denial didn't count
+    assert.equal(authorize(engine, call("c")).outcome, "deny"); // total 3 reached
   });
 
   it("resets usage on startTurn", () => {
-    engine.authorize(call("a"));
-    engine.authorize(call("a"));
+    authorize(engine, call("a"));
+    authorize(engine, call("a"));
     engine.startTurn();
-    assert.equal(engine.authorize(call("a")).allowed, true);
+    assert.equal(authorize(engine, call("a")).outcome, "allow");
   });
 
   it("stops at the first denying rule", () => {
@@ -123,10 +135,41 @@ describe("PolicyEngine", () => {
       },
     });
     const e = new PolicyEngine([spy("a", false), spy("b", true), spy("c", true)]);
-    const d = e.authorize(call("t"));
+    const d = authorize(e, call("t"));
     assert.deepEqual(seen, ["a", "b"]);
-    assert.equal(!d.allowed && d.rule, "b");
+    assert.equal(ruleOf(d), "b");
     assert.deepEqual(e.ruleIds, ["a", "b", "c"]);
+  });
+});
+
+describe("requireApproval", () => {
+  const rule = requireApproval({ tools: ["wiki"] });
+
+  it("requires approval only for gated tools", () => {
+    assert.equal(rule.check(call("calc"), ctx), null);
+    assert.deepEqual(rule.check(call("wiki"), ctx), {
+      rule: "human-approval",
+      effect: "require_approval",
+      reason: '"wiki" requires your approval before it runs.',
+    });
+  });
+
+  it("a denial from any rule beats an approval requirement", () => {
+    const e = new PolicyEngine([
+      rule,
+      toolAccess({ deny: ["wiki"] }),
+    ]);
+    const d = e.evaluate(call("wiki"));
+    assert.equal(d.outcome, "deny");
+    assert.equal(ruleOf(d), "tool-access");
+  });
+
+  it("evaluate does not consume quota; only recordExecution does", () => {
+    const e = new PolicyEngine([rule, maxCallsPerTurn({ perTool: 1 })]);
+    assert.equal(e.evaluate(call("wiki")).outcome, "require_approval");
+    assert.equal(e.evaluate(call("wiki")).outcome, "require_approval");
+    e.recordExecution(call("wiki"));
+    assert.equal(e.evaluate(call("wiki")).outcome, "deny");
   });
 });
 
@@ -142,8 +185,23 @@ describe("config", () => {
         TOOL_POLICY_MAX_CALLS_PER_TOOL: "1",
         TOOL_POLICY_MAX_ARG_CHARS: "100",
       }),
-      { deny: ["wikipedia_lookup", "calculator"], maxCalls: 3, maxCallsPerTool: 1, maxArgChars: 100 },
+      {
+        deny: ["wikipedia_lookup", "calculator"],
+        maxCalls: 3,
+        maxCallsPerTool: 1,
+        maxArgChars: 100,
+        requireApproval: [],
+        approvalTimeoutMs: 120_000,
+      },
     );
+  });
+  it("parses approval settings", () => {
+    const c = policyConfigFromEnv({
+      TOOL_POLICY_REQUIRE_APPROVAL: "wikipedia_lookup",
+      TOOL_POLICY_APPROVAL_TIMEOUT_MS: "5000",
+    });
+    assert.deepEqual(c.requireApproval, ["wikipedia_lookup"]);
+    assert.equal(c.approvalTimeoutMs, 5000);
   });
   it("rejects malformed numbers", () => {
     assert.throws(() => policyConfigFromEnv({ TOOL_POLICY_MAX_CALLS: "0" }), /positive integer/);
@@ -151,11 +209,11 @@ describe("config", () => {
   });
   it("default policy allows registered tools with valid args only", () => {
     const p = createToolPolicy(TOOLS);
-    assert.equal(p.authorize(call("calculator", { expression: "1+1" })).allowed, true);
-    const unknown = p.authorize(call("shell_exec", { command: "ls" }));
-    assert.equal(!unknown.allowed && unknown.rule, "tool-access");
-    const badArgs = p.authorize(call("wikipedia_lookup", {}));
-    assert.equal(!badArgs.allowed && badArgs.rule, "argument-schema");
+    assert.equal(authorize(p, call("calculator", { expression: "1+1" })).outcome, "allow");
+    const unknown = authorize(p, call("shell_exec", { command: "ls" }));
+    assert.equal(ruleOf(unknown), "tool-access");
+    const badArgs = authorize(p, call("wikipedia_lookup", {}));
+    assert.equal(ruleOf(badArgs), "argument-schema");
   });
 });
 

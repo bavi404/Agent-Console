@@ -9,6 +9,7 @@ import { useChatStore } from "@/stores/chatStore";
 import { useTimelineStore } from "@/stores/timelineStore";
 import { useContextStore } from "@/stores/contextStore";
 import { useWebSocketStore } from "@/stores/websocketStore";
+import { useApprovalStore } from "@/stores/approvalStore";
 
 /**
  * The single bridge between the (pure) WebSocketManager and React state.
@@ -82,6 +83,10 @@ function routeMessage(
     case "TOOL_STATUS": {
       chat.applyToolStatus(event);
       timeline.applyToolStatus(event);
+      // The server has acted on any decision we sent for this call.
+      if (event.status !== "awaiting_approval") {
+        useApprovalStore.getState().settle(event.callId);
+      }
       break;
     }
     case "TOOL_RESULT": {
@@ -162,6 +167,11 @@ export function useWebSocket(
             ws.resetSessionDiagnostics();
           }
           if (event.snapshot.state !== "Reconnecting") ws.setRetryIn(null);
+          // A decision sent on a dropped socket may never have arrived; let
+          // the user send it again (the server ignores duplicates).
+          if (event.snapshot.state === "Resuming") {
+            useApprovalStore.getState().clearSubmitted();
+          }
           break;
         case "retry":
           ws.setRetryIn(event.delayMs);
@@ -192,9 +202,12 @@ export function useWebSocket(
       }
     });
 
+    const approvals = useApprovalStore.getState();
+    approvals.bindTransport((message) => manager.send(message));
     manager.connect();
 
     return () => {
+      approvals.bindTransport(null);
       subscription.unsubscribe();
       batcher.flush();
       manager.close();

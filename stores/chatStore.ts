@@ -1,6 +1,5 @@
 import { create } from "zustand";
 import type { ChatRole } from "@/protocol/types";
-import type { ToolStatus } from "@/protocol/toolStatus";
 import {
   acknowledgeToolCall,
   addLocalMessage,
@@ -11,6 +10,7 @@ import {
   emptyTranscript,
   endStream,
   failActiveStream,
+  type ToolStatusInput,
   type TranscriptState,
 } from "@/lib/streaming";
 
@@ -32,15 +32,7 @@ interface ChatActions {
   endStream: (event: { messageId: string }) => void;
   addToolCall: (event: { callId: string; name: string; args: unknown }) => void;
   acknowledgeToolCall: (callId: string) => void;
-  applyToolStatus: (event: {
-    callId: string;
-    name: string;
-    args: unknown;
-    status: ToolStatus;
-    detail?: string;
-    progress?: number;
-    policyRule?: string;
-  }) => void;
+  applyToolStatus: (event: Omit<ToolStatusInput, "now">) => void;
   completeToolCall: (event: {
     callId: string;
     ok: boolean;

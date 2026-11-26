@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  APPROVAL_OUTCOMES,
   TOOL_STATUSES,
+  isApprovalOutcome,
+  isToolDecision,
   canAdvanceToolStatus,
   mergeToolStatus,
   shouldApplyToolStatus,
@@ -29,14 +32,30 @@ describe("toolStatus — lifecycle rules", () => {
       "failed",
       "cancelled",
       "denied",
+      "rejected",
     ];
+    const notExecuted: ToolStatus[] = ["cancelled", "denied", "rejected"];
     for (const s of TOOL_STATUSES) {
       expect(isTerminalToolStatus(s)).toBe(terminal.includes(s));
       expect(isInFlightToolStatus(s)).toBe(!terminal.includes(s));
-      expect(isNotExecutedToolStatus(s)).toBe(
-        s === "cancelled" || s === "denied",
-      );
+      expect(isNotExecutedToolStatus(s)).toBe(notExecuted.includes(s));
     }
+  });
+
+  it("orders approval between queued and running", () => {
+    expect(canAdvanceToolStatus("queued", "awaiting_approval")).toBe(true);
+    expect(canAdvanceToolStatus("awaiting_approval", "running")).toBe(true);
+    expect(canAdvanceToolStatus("awaiting_approval", "rejected")).toBe(true);
+    expect(canAdvanceToolStatus("running", "awaiting_approval")).toBe(false);
+    expect(canAdvanceToolStatus("rejected", "running")).toBe(false);
+  });
+
+  it("guards approval vocabulary", () => {
+    for (const o of APPROVAL_OUTCOMES) expect(isApprovalOutcome(o)).toBe(true);
+    expect(isApprovalOutcome("approve")).toBe(false);
+    expect(isToolDecision("approve")).toBe(true);
+    expect(isToolDecision("reject")).toBe(true);
+    expect(isToolDecision("approved")).toBe(false);
   });
 
   it("only allows strictly forward transitions", () => {
@@ -116,6 +135,31 @@ describe("toolStatus — update helpers", () => {
       progress: 1,
     });
     expect(node.detail).toBe("old"); // input untouched
+
+    // Sticky provenance survives later statuses; transient fields do not.
+    const awaiting = mergeToolStatus(
+      { id: "c1", status: "queued" as ToolStatus },
+      {
+        status: "awaiting_approval",
+        detail: "needs sign-off",
+        policyRule: "human-approval",
+        expiresAt: 123,
+      },
+    );
+    const approved = mergeToolStatus(awaiting, {
+      status: "running",
+      approval: "approved",
+    });
+    expect(approved).toEqual({
+      id: "c1",
+      status: "running",
+      policyRule: "human-approval",
+      approval: "approved",
+    });
+    expect(mergeToolStatus(approved, { status: "succeeded" })).toMatchObject({
+      policyRule: "human-approval",
+      approval: "approved",
+    });
     const denied = mergeToolStatus(node, {
       status: "denied",
       detail: "not allowed",
@@ -167,6 +211,8 @@ describe("parseFrame — TOOL_STATUS", () => {
     ["progress", { progress: 1.5 }],
     ["progress", { progress: "half" }],
     ["policyRule", { status: "denied", policyRule: 42 }],
+    ["expiresAt", { status: "awaiting_approval", expiresAt: "soon" }],
+    ["approval", { status: "running", approval: "approve" }],
   ])("rejects a bad %s", (field, patch) => {
     expect(parse({ ...base, ...patch })).toEqual({
       ok: false,
@@ -185,6 +231,27 @@ describe("parseFrame — TOOL_STATUS", () => {
       status: "denied",
       policyRule: "tool-access",
     });
+  });
+
+  it("accepts approval requests and resolutions", () => {
+    const request = parse({
+      ...base,
+      status: "awaiting_approval",
+      detail: "needs sign-off",
+      policyRule: "human-approval",
+      expiresAt: 1_900_000_000_000,
+    });
+    expect(request.ok && request.event).toMatchObject({
+      status: "awaiting_approval",
+      expiresAt: 1_900_000_000_000,
+    });
+    for (const [status, approval] of [
+      ["running", "approved"],
+      ["rejected", "rejected"],
+      ["cancelled", "expired"],
+    ]) {
+      expect(parse({ ...base, status, approval }).ok).toBe(true);
+    }
   });
 
   it("requires args to be present (null is allowed)", () => {

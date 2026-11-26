@@ -6,8 +6,11 @@
  *   2. Stream text as TOKEN frames (index increments per delta).
  *   3. If the model requests tools, announce every call up front with TOOL_CALL
  *      (status "queued"), then check each against the tool policy. A denied
- *      call gets TOOL_STATUS "denied" (reason + rule) and never executes; an
- *      allowed one runs: TOOL_STATUS "running" (plus
+ *      call gets TOOL_STATUS "denied" (reason + rule) and never executes. A
+ *      call that needs sign-off gets "awaiting_approval" and waits for a
+ *      TOOL_APPROVAL from the console: approved → it runs; rejected →
+ *      "rejected"; no decision in time → "cancelled" (approval "expired").
+ *      An allowed one runs: TOOL_STATUS "running" (plus
  *      any progress the tool reports), TOOL_RESULT, and a CONTEXT_SNAPSHOT.
  *      Loop again with the results. Calls requested on the final allowed round
  *      are not executed — they are marked TOOL_STATUS "cancelled".
@@ -19,8 +22,13 @@
 import { Session } from "./protocol.js";
 import type { Provider, ChatTurn } from "./providers/index.js";
 import { TOOLS, TOOLS_BY_NAME, type ToolProgress } from "./tools.js";
-import type { ToolStatus } from "./protocol.js";
-import { createToolPolicy, type PolicyEngine } from "./policy/index.js";
+import type { ApprovalOutcome, ToolStatus } from "./protocol.js";
+import {
+  DEFAULT_POLICY_CONFIG,
+  createToolPolicy,
+  type PolicyEngine,
+} from "./policy/index.js";
+import { ApprovalGate, type ApprovalDecision } from "./approvalGate.js";
 
 const SYSTEM_PROMPT = `You are a helpful agent embedded in a developer console.
 You can call tools when they help answer accurately:
@@ -29,6 +37,22 @@ You can call tools when they help answer accurately:
 Prefer calling a tool over guessing. After using tools, give a concise final answer.`;
 
 const MAX_TOOL_ROUNDS = 4;
+
+export interface AgentOptions {
+  /** Defaults to the standard policy over all registered tools. */
+  policy?: PolicyEngine;
+  /** Defaults to a gate on real timers. */
+  approvals?: ApprovalGate;
+  /** How long a call waits for a human decision. */
+  approvalTimeoutMs?: number;
+}
+
+/** Optional fields carried on a TOOL_STATUS frame. */
+type StatusExtras = ToolProgress & {
+  policyRule?: string;
+  expiresAt?: number;
+  approval?: ApprovalOutcome;
+};
 
 interface PendingToolCall {
   id: string;
@@ -41,12 +65,40 @@ export class Agent {
     { role: "system", content: SYSTEM_PROMPT },
   ];
 
+  /** Checked before every tool execution. Per-agent: holds turn counters. */
+  private readonly policy: PolicyEngine;
+  /** Parks calls that need a human decision. */
+  private readonly approvals: ApprovalGate;
+  private readonly approvalTimeoutMs: number;
+
   constructor(
     private readonly session: Session,
     private readonly provider: Provider,
-    /** Checked before every tool execution. Per-agent: holds turn counters. */
-    private readonly policy: PolicyEngine = createToolPolicy(TOOLS),
-  ) {}
+    options: AgentOptions = {},
+  ) {
+    this.policy = options.policy ?? createToolPolicy(TOOLS);
+    this.approvals = options.approvals ?? new ApprovalGate();
+    this.approvalTimeoutMs =
+      options.approvalTimeoutMs ?? DEFAULT_POLICY_CONFIG.approvalTimeoutMs;
+  }
+
+  /**
+   * Apply a human decision from TOOL_APPROVAL. Returns false if the call is
+   * not waiting for one (unknown, already decided, expired) — duplicates and
+   * late clicks are harmless no-ops.
+   */
+  decideToolCall(
+    callId: string,
+    decision: ApprovalDecision,
+    note?: string,
+  ): boolean {
+    return this.approvals.decide(callId, decision, note);
+  }
+
+  /** Stop waiting on humans (e.g. the socket closed). Pending calls cancel. */
+  dispose(reason = "Connection closed"): void {
+    this.approvals.cancelAll(reason);
+  }
 
   async handleUserMessage(text: string): Promise<void> {
     this.history.push({ role: "user", content: text });
@@ -144,11 +196,7 @@ export class Agent {
   private emitToolStatus(
     call: PendingToolCall,
     status: ToolStatus,
-    {
-      detail,
-      progress,
-      policyRule,
-    }: ToolProgress & { policyRule?: string } = {},
+    { detail, progress, policyRule, expiresAt, approval }: StatusExtras = {},
   ): void {
     this.session.emit({
       type: "TOOL_STATUS",
@@ -158,16 +206,35 @@ export class Agent {
       status,
       ...(detail !== undefined ? { detail } : {}),
       ...(policyRule !== undefined ? { policyRule } : {}),
+      ...(expiresAt !== undefined ? { expiresAt } : {}),
+      ...(approval !== undefined ? { approval } : {}),
       ...(progress !== undefined && Number.isFinite(progress)
         ? { progress: Math.min(1, Math.max(0, progress)) }
         : {}),
     });
   }
 
-  private async runTool(call: PendingToolCall): Promise<void> {
-    // Policy gate: nothing executes unless every rule allows it.
-    const decision = this.policy.authorize(call);
-    if (!decision.allowed) {
+  /** Record a call that never ran in the model's history, so it can adapt. */
+  private recordNotExecuted(call: PendingToolCall, message: string): void {
+    this.history.push({
+      role: "tool",
+      content: `Error: ${message}`,
+      toolCallId: call.id,
+      toolName: call.name,
+    });
+  }
+
+  /**
+   * Policy gate. Resolves to the extras for the "running" status if the call
+   * may execute, or null if it must not (the outcome has already been emitted
+   * and recorded for the model).
+   */
+  private async admit(call: PendingToolCall): Promise<StatusExtras | null> {
+    const decision = this.policy.evaluate(call);
+
+    if (decision.outcome === "allow") return {};
+
+    if (decision.outcome === "deny") {
       this.emitToolStatus(call, "denied", {
         detail: decision.reason,
         policyRule: decision.rule,
@@ -179,17 +246,79 @@ export class Agent {
           reason: decision.reason,
         },
       });
-      // Tell the model, so it can adapt instead of retrying blindly.
-      this.history.push({
-        role: "tool",
-        content: `Error: blocked by policy (${decision.rule}): ${decision.reason}`,
-        toolCallId: call.id,
-        toolName: call.name,
-      });
-      return;
+      this.recordNotExecuted(
+        call,
+        `blocked by policy (${decision.rule}): ${decision.reason}`,
+      );
+      return null;
     }
 
-    this.emitToolStatus(call, "running");
+    // require_approval: park the call until a human decides.
+    const expiresAt = Date.now() + this.approvalTimeoutMs;
+    this.emitToolStatus(call, "awaiting_approval", {
+      detail: decision.reason,
+      policyRule: decision.rule,
+      expiresAt,
+    });
+    this.session.snapshotContext({
+      pendingApproval: { tool: call.name, callId: call.id, expiresAt },
+    });
+    const resolution = await this.approvals.request(
+      call.id,
+      this.approvalTimeoutMs,
+    );
+    this.session.snapshotContext({
+      pendingApproval: null,
+      lastApproval: {
+        tool: call.name,
+        outcome: resolution.outcome,
+        ...("note" in resolution && resolution.note !== undefined
+          ? { note: resolution.note }
+          : {}),
+      },
+    });
+
+    switch (resolution.outcome) {
+      case "approved":
+        return {
+          approval: "approved",
+          detail: resolution.note
+            ? `Approved: ${resolution.note}`
+            : "Approved by user",
+        };
+      case "rejected": {
+        const why = resolution.note ?? "No reason given.";
+        this.emitToolStatus(call, "rejected", {
+          approval: "rejected",
+          detail: why,
+        });
+        this.recordNotExecuted(call, `the user rejected this tool call: ${why}`);
+        return null;
+      }
+      case "expired": {
+        const seconds = Math.round(this.approvalTimeoutMs / 1000);
+        this.emitToolStatus(call, "cancelled", {
+          approval: "expired",
+          detail: `No decision within ${seconds}s`,
+        });
+        this.recordNotExecuted(
+          call,
+          "the approval request expired without a decision; the tool did not run.",
+        );
+        return null;
+      }
+      case "cancelled":
+        this.emitToolStatus(call, "cancelled", { detail: resolution.reason });
+        this.recordNotExecuted(call, `cancelled: ${resolution.reason}`);
+        return null;
+    }
+  }
+
+  private async runTool(call: PendingToolCall): Promise<void> {
+    const admitted = await this.admit(call);
+    if (!admitted) return;
+    this.policy.recordExecution(call);
+    this.emitToolStatus(call, "running", admitted);
 
     const tool = TOOLS_BY_NAME[call.name];
     const started = Date.now();

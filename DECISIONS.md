@@ -129,7 +129,7 @@ effects.
 
 1. **Illegal states are unrepresentable** — if it is not in `TRANSITIONS`, it
    cannot happen.
-2. **Testable** — 219 tests include a full state × event matrix.
+2. **Testable** — 236 tests include a full state × event matrix.
 3. **Framework-free** — `WebSocketManager` calls `machine.send(event)`; React
    only displays `snapshot.state`.
 4. **Reconnect attempt counter** — incremented only on `DROP`, reset on
@@ -383,7 +383,8 @@ correctness to how many DOM nodes exist.
 | Reconnect backoff | Fixed schedule 500 ms → 10 s cap (`lib/reconnectBackoff.ts`) |
 | Heartbeat | Server PING → client PONG; client silence → drop; malformed PING logged, never disconnect |
 | Tool delivery | `TOOL_ACK` on every `TOOL_CALL`; cards idempotent by `callId`; ack tracked separately from execution status |
-| Tool execution status | Server-owned via `TOOL_STATUS` (`queued → running → succeeded/failed/cancelled/denied`); monotonic and self-describing (name + args on every frame) |
+| Tool execution status | Server-owned via `TOOL_STATUS` (`queued → awaiting_approval → running → succeeded/failed/cancelled/denied/rejected`); monotonic and self-describing (name + args on every frame) |
+| Human approval | Policy rules may return `require_approval`; the server parks the call (`awaiting_approval` + `expiresAt`) until a `TOOL_APPROVAL` arrives, it expires, or the socket closes. First decision wins. The client keeps unconfirmed clicks in `approvalStore` and never changes a card's status itself; `approval` and `policyRule` stay on the card once set |
 | Tool policy | Enforced server-side before execution (`backend/src/policy/`): ordered, composable rules; first denial wins; denial is a terminal `denied` status carrying `policyRule` + reason, and is fed back to the model. The client only displays policy outcomes, it never enforces them |
 | Context diff | Recursive `lib/contextDiff.ts` + flat `lib/jsonDiff.ts` for inspector |
 | Testing | Injectable socket/clock/scheduler; 90%+ coverage thresholds on protocol logic |

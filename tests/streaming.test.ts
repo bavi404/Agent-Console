@@ -7,6 +7,7 @@ import {
   acknowledgeToolCall,
   applyToolStatus,
   completeToolCall,
+  hasToolAwaitingApproval,
   addLocalMessage,
   failActiveStream,
   type TranscriptState,
@@ -240,6 +241,55 @@ describe("tool cards — explicit execution status", () => {
     const ref = s;
     s = applyToolStatus(s, status("c1", "running", { name: "shell" }));
     s = completeToolCall(s, { callId: "c1", ok: true, durationMs: 1 });
+    expect(s).toBe(ref);
+  });
+
+  it("approval: stays paused while awaiting, keeps provenance after running", () => {
+    let s = emptyTranscript();
+    s = applyToken(s, tok("m1", 0, "x"));
+    s = addToolCall(s, { callId: "c1", name: "email", args: {}, now: 0 });
+    s = applyToolStatus(s, {
+      ...status("c1", "awaiting_approval", { name: "email", detail: "sign-off" }),
+      policyRule: "human-approval",
+      expiresAt: 99,
+    });
+    expect(hasToolAwaitingApproval(s)).toBe(true);
+    expect(msg(s, "m1").status).toBe("paused");
+
+    s = applyToolStatus(s, {
+      ...status("c1", "running", { name: "email" }),
+      approval: "approved",
+    });
+    expect(hasToolAwaitingApproval(s)).toBe(false);
+    expect(card(s, "c1")).toMatchObject({
+      status: "running",
+      approval: "approved",
+      policyRule: "human-approval",
+    });
+    expect(card(s, "c1").expiresAt).toBeUndefined();
+
+    s = completeToolCall(s, { callId: "c1", ok: true, result: 1, durationMs: 5 });
+    expect(card(s, "c1")).toMatchObject({ status: "succeeded", approval: "approved" });
+    expect(msg(s, "m1").status).toBe("streaming");
+  });
+
+  it("approval: rejection is terminal, resumes the stream, ignores results", () => {
+    let s = emptyTranscript();
+    s = applyToken(s, tok("m1", 0, "x"));
+    s = applyToolStatus(s, status("c1", "awaiting_approval", { name: "email" }));
+    s = applyToolStatus(s, {
+      ...status("c1", "rejected", { name: "email", detail: "not now" }),
+      approval: "rejected",
+    });
+    expect(card(s, "c1")).toMatchObject({
+      status: "rejected",
+      approval: "rejected",
+      detail: "not now",
+    });
+    expect(msg(s, "m1").status).toBe("streaming");
+    const ref = s;
+    s = completeToolCall(s, { callId: "c1", ok: true, durationMs: 1 });
+    s = applyToolStatus(s, status("c1", "running", { name: "email" }));
     expect(s).toBe(ref);
   });
 
