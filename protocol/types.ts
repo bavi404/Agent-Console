@@ -14,6 +14,8 @@
  *    `unknown` (e.g. straight off `JSON.parse`).
  */
 
+import type { ToolStatus } from "./toolStatus";
+
 export const PROTOCOL_VERSION = 1 as const;
 
 /* ------------------------------------------------------------------ */
@@ -39,6 +41,7 @@ export const ServerEventType = {
   TOKEN: "TOKEN",
   TOOL_CALL: "TOOL_CALL",
   TOOL_RESULT: "TOOL_RESULT",
+  TOOL_STATUS: "TOOL_STATUS",
   STREAM_END: "STREAM_END",
   CONTEXT_SNAPSHOT: "CONTEXT_SNAPSHOT",
   PING: "PING",
@@ -67,7 +70,7 @@ export interface TokenEvent extends ServerBase {
   index: number;
 }
 
-/** The agent invoked a tool. */
+/** The agent invoked a tool. Implies status "queued" until told otherwise. */
 export interface ToolCallEvent extends ServerBase {
   type: typeof ServerEventType.TOOL_CALL;
   callId: string;
@@ -85,6 +88,27 @@ export interface ToolResultEvent extends ServerBase {
   result?: unknown;
   error?: string;
   durationMs: number;
+}
+
+/**
+ * Explicit execution-status update for a tool call.
+ *
+ * Self-describing: carries the tool name and arguments alongside the status,
+ * so a consumer can render the call from this frame alone (e.g. when it is the
+ * first frame seen for `callId`). Statuses only move forward — see
+ * `protocol/toolStatus.ts`. Result payloads still travel in TOOL_RESULT.
+ */
+export interface ToolStatusEvent extends ServerBase {
+  type: typeof ServerEventType.TOOL_STATUS;
+  callId: string;
+  name: string;
+  /** Opaque arguments — narrow before use. */
+  args: unknown;
+  status: ToolStatus;
+  /** Optional human-readable progress note (e.g. "Fetching summary"). */
+  detail?: string;
+  /** Optional completion fraction in [0, 1]. */
+  progress?: number;
 }
 
 /** A message stream finished. */
@@ -118,6 +142,7 @@ export type ServerEvent =
   | TokenEvent
   | ToolCallEvent
   | ToolResultEvent
+  | ToolStatusEvent
   | StreamEndEvent
   | ContextSnapshotEvent
   | PingEvent
@@ -232,6 +257,8 @@ export const isToolCallEvent = (e: ServerEvent): e is ToolCallEvent =>
   e.type === ServerEventType.TOOL_CALL;
 export const isToolResultEvent = (e: ServerEvent): e is ToolResultEvent =>
   e.type === ServerEventType.TOOL_RESULT;
+export const isToolStatusEvent = (e: ServerEvent): e is ToolStatusEvent =>
+  e.type === ServerEventType.TOOL_STATUS;
 export const isStreamEndEvent = (e: ServerEvent): e is StreamEndEvent =>
   e.type === ServerEventType.STREAM_END;
 export const isContextSnapshotEvent = (

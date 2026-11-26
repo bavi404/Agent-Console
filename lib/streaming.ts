@@ -4,14 +4,16 @@
  * The transcript is an ordered interleaving of two representations:
  *   - ChatMessage: a message owned by exactly one stream_id, grown token by
  *     token, carrying a StreamStatus.
- *   - ToolCard: a tool invocation with a 5-state lifecycle that freezes the
- *     active message while it runs.
+ *   - ToolCard: a tool invocation with a server-driven execution status
+ *     (queued → running → succeeded | failed | cancelled) that freezes the
+ *     active message while any tool is in flight.
  *
  * Guarantees relied on by the renderer and the tool-card lifecycle:
  *   - Render tokens immediately ........... `applyToken` appends and returns at once.
  *   - Each stream_id owns its message ..... keyed by `messageId`.
  *   - Tool calls freeze the message ....... `addToolCall` flips the active
- *                                           stream to "paused".
+ *                                           stream to "paused"; it resumes once
+ *                                           no tool is still in flight.
  *   - Resume from the exact character ..... `tokenCount` is the next expected
  *                                           token index; appends continue the
  *                                           same string, never restart it.
@@ -29,6 +31,16 @@
  * Pure: no clocks, no IDs invented here — callers pass `now` and local ids.
  */
 import type { ChatRole } from "@/protocol/types";
+import {
+  isInFlightToolStatus,
+  isTerminalToolStatus,
+  mergeToolStatus,
+  shouldApplyToolStatus,
+  toolStatusFromResult,
+  type ToolStatus,
+} from "@/protocol/toolStatus";
+
+export type { ToolStatus } from "@/protocol/toolStatus";
 
 export type StreamStatus = "streaming" | "paused" | "complete" | "error";
 
@@ -45,26 +57,23 @@ export interface ChatMessage {
 }
 
 /**
- * Tool call lifecycle:
- *   pending      — TOOL_CALL received, card shown, ACK not yet sent.
- *   acknowledged — TOOL_ACK sent to the server.
- *   running      — the tool is executing (awaiting TOOL_RESULT).
- *   completed    — TOOL_RESULT arrived with ok: true.
- *   error        — TOOL_RESULT arrived with ok: false.
+ * A tool invocation card. Two independent axes:
+ *   - `status`       execution lifecycle, owned by the server (TOOL_CALL implies
+ *                    "queued"; TOOL_STATUS / TOOL_RESULT advance it). Monotonic —
+ *                    see protocol/toolStatus.ts.
+ *   - `acknowledged` delivery: whether this client has sent TOOL_ACK.
  */
-export type ToolCardStatus =
-  | "pending"
-  | "acknowledged"
-  | "running"
-  | "completed"
-  | "error";
-
 export interface ToolCard {
   kind: "tool";
   id: string; // callId
   name: string;
   args: unknown;
-  status: ToolCardStatus;
+  status: ToolStatus;
+  acknowledged: boolean;
+  /** Latest progress note from TOOL_STATUS. */
+  detail?: string;
+  /** Latest progress fraction in [0, 1] from TOOL_STATUS. */
+  progress?: number;
   result?: unknown;
   error?: string;
   durationMs?: number;
@@ -169,7 +178,8 @@ export function endStream(
 ): TranscriptState {
   const message = getMessage(state, messageId);
   if (!message) return state;
-  const status: StreamStatus = message.status === "error" ? "error" : "complete";
+  const status: StreamStatus =
+    message.status === "error" ? "error" : "complete";
   const updated: ChatMessage = { ...message, status };
   return {
     order: state.order,
@@ -220,19 +230,33 @@ export function resumeActiveStream(state: TranscriptState): TranscriptState {
 
 /* ----------------------------- tool cards ------------------------------ */
 
-function setToolStatus(
-  state: TranscriptState,
-  callId: string,
-  allowedFrom: readonly ToolCardStatus[],
-  to: ToolCardStatus,
-): TranscriptState {
-  const tool = getTool(state, callId);
-  if (!tool || !allowedFrom.includes(tool.status)) return state;
+function hasToolInFlight(state: TranscriptState): boolean {
+  for (const id of state.order) {
+    const item = state.items[id];
+    if (item?.kind === "tool" && isInFlightToolStatus(item.status)) return true;
+  }
+  return false;
+}
+
+/** Resume the frozen stream once every tool has reached a terminal status. */
+function resumeIfToolsIdle(state: TranscriptState): TranscriptState {
+  return hasToolInFlight(state) ? state : resumeActiveStream(state);
+}
+
+function replaceTool(state: TranscriptState, tool: ToolCard): TranscriptState {
   return {
     order: state.order,
-    items: { ...state.items, [callId]: { ...tool, status: to } },
+    items: { ...state.items, [tool.id]: tool },
     activeStreamId: state.activeStreamId,
   };
+}
+
+/** Create a new card and freeze the active stream if the tool is in flight. */
+function insertTool(state: TranscriptState, tool: ToolCard): TranscriptState {
+  const base = isInFlightToolStatus(tool.status)
+    ? pauseActiveStream(state)
+    : state;
+  return withItem(base, tool);
 }
 
 export interface ToolCallInput {
@@ -243,7 +267,7 @@ export interface ToolCallInput {
 }
 
 /**
- * Record a tool call (status "pending") and freeze the active stream.
+ * Record a tool call (status "queued") and freeze the active stream.
  * Idempotent per callId, so a replayed TOOL_CALL never overwrites the card or
  * clobbers a later lifecycle state.
  */
@@ -252,32 +276,72 @@ export function addToolCall(
   input: ToolCallInput,
 ): TranscriptState {
   if (state.items[input.callId]) return state; // never overwrite an existing card
-  const frozen = pauseActiveStream(state);
-  const tool: ToolCard = {
+  return insertTool(state, {
     kind: "tool",
     id: input.callId,
     name: input.name,
     args: input.args,
-    status: "pending",
+    status: "queued",
+    acknowledged: false,
     createdAt: input.now,
-  };
-  return withItem(frozen, tool);
+  });
 }
 
-/** pending -> acknowledged, after TOOL_ACK has been sent. */
+/** Record that TOOL_ACK was sent. Independent of execution status. */
 export function acknowledgeToolCall(
   state: TranscriptState,
   callId: string,
 ): TranscriptState {
-  return setToolStatus(state, callId, ["pending"], "acknowledged");
+  const tool = getTool(state, callId);
+  if (!tool || tool.acknowledged) return state;
+  return replaceTool(state, { ...tool, acknowledged: true });
 }
 
-/** acknowledged|pending -> running, while the tool executes. */
-export function runToolCall(
+export interface ToolStatusInput {
+  callId: string;
+  name: string;
+  args: unknown;
+  status: ToolStatus;
+  detail?: string;
+  progress?: number;
+  now: number;
+}
+
+/**
+ * Apply an explicit TOOL_STATUS.
+ *
+ *   - Unknown callId: the frame is self-describing, so the card is created
+ *     from it (name + args + status).
+ *   - Forward move (queued → running → terminal): status, detail and progress
+ *     are updated.
+ *   - Same in-flight status: a progress tick — detail/progress are refreshed.
+ *   - Anything else (regression, post-terminal, exact duplicate): no-op, same
+ *     reference returned.
+ */
+export function applyToolStatus(
   state: TranscriptState,
-  callId: string,
+  input: ToolStatusInput,
 ): TranscriptState {
-  return setToolStatus(state, callId, ["pending", "acknowledged"], "running");
+  const tool = getTool(state, input.callId);
+
+  if (!tool) {
+    if (state.items[input.callId]) return state; // id collision with a message
+    const created: ToolCard = {
+      kind: "tool",
+      id: input.callId,
+      name: input.name,
+      args: input.args,
+      status: input.status,
+      acknowledged: false,
+      createdAt: input.now,
+    };
+    return insertTool(state, mergeToolStatus(created, input));
+  }
+
+  if (!shouldApplyToolStatus(tool, input)) return state;
+  const updated = mergeToolStatus(tool, input);
+  const next = replaceTool(state, updated);
+  return isTerminalToolStatus(updated.status) ? resumeIfToolsIdle(next) : next;
 }
 
 export interface ToolResultInput {
@@ -288,26 +352,30 @@ export interface ToolResultInput {
   durationMs: number;
 }
 
-/** Complete a tool call (completed|error) and resume the frozen stream. */
+/**
+ * Attach a TOOL_RESULT: sets the terminal status (unless TOOL_STATUS already
+ * did) plus result/error/duration, then resumes the frozen stream if no other
+ * tool is in flight. Idempotent: a replayed result, or a result for a
+ * cancelled call, is ignored.
+ */
 export function completeToolCall(
   state: TranscriptState,
   input: ToolResultInput,
 ): TranscriptState {
   const tool = getTool(state, input.callId);
   if (!tool) return state;
+  if (tool.status === "cancelled" || tool.durationMs !== undefined)
+    return state;
   const updated: ToolCard = {
     ...tool,
-    status: input.ok ? "completed" : "error",
+    status: isTerminalToolStatus(tool.status)
+      ? tool.status
+      : toolStatusFromResult(input.ok),
     result: input.result,
     ...(input.error !== undefined ? { error: input.error } : {}),
     durationMs: input.durationMs,
   };
-  const next: TranscriptState = {
-    order: state.order,
-    items: { ...state.items, [input.callId]: updated },
-    activeStreamId: state.activeStreamId,
-  };
-  return resumeActiveStream(next);
+  return resumeIfToolsIdle(replaceTool(state, updated));
 }
 
 /* ---------------------------- local messages --------------------------- */

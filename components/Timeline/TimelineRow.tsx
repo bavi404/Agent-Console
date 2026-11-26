@@ -2,22 +2,13 @@
 
 import { memo, useCallback } from "react";
 import { useTimelineStore } from "@/stores/timelineStore";
-import type { ToolPhase } from "@/stores/timelineStore";
+import type { ToolNode } from "@/stores/timelineStore";
 import { useSelectionStore } from "@/stores/selectionStore";
 import { ToolCard, type ToolCardView } from "@/components/ToolCards/ToolCard";
-import type { ToolCardStatus } from "@/lib/streaming";
-
-const PHASE_DOT: Record<ToolPhase, string> = {
-  running: "bg-warn animate-pulse-dot",
-  completed: "bg-ok",
-  error: "bg-err",
-};
-
-const PHASE_TO_CARD: Record<ToolPhase, ToolCardStatus> = {
-  running: "running",
-  completed: "completed",
-  error: "error",
-};
+import {
+  TOOL_STATUS_DOT,
+  TOOL_STATUS_LABEL,
+} from "@/components/ToolCards/toolStatusStyle";
 
 /**
  * A single timeline row.
@@ -72,7 +63,7 @@ function TimelineRowImpl({ id }: { id: string }) {
 
         {item.kind === "tool" ? (
           <span
-            className={`h-2 w-2 shrink-0 rounded-full ${PHASE_DOT[item.phase]}`}
+            className={`h-2 w-2 shrink-0 rounded-full ${TOOL_STATUS_DOT[item.status]}`}
           />
         ) : (
           <span
@@ -92,8 +83,13 @@ function TimelineRowImpl({ id }: { id: string }) {
                 {item.name}
               </span>
               <span className="text-[10px] uppercase tracking-wide text-ink-faint">
-                {item.phase}
+                {TOOL_STATUS_LABEL[item.status]}
               </span>
+              {item.detail !== undefined && item.durationMs === undefined && (
+                <span className="truncate text-xs text-ink-dim">
+                  {item.detail}
+                </span>
+              )}
               {item.durationMs !== undefined && (
                 <span className="ml-auto shrink-0 text-xs text-ink-faint">
                   {item.durationMs}ms
@@ -135,18 +131,13 @@ function TimelineRowImpl({ id }: { id: string }) {
   );
 }
 
-function toCardView(node: {
-  name: string;
-  args: unknown;
-  phase: ToolPhase;
-  result?: unknown;
-  error?: string;
-  durationMs?: number;
-}): ToolCardView {
+function toCardView(node: ToolNode): ToolCardView {
   return {
     name: node.name,
     args: node.args,
-    status: PHASE_TO_CARD[node.phase],
+    status: node.status,
+    ...(node.detail !== undefined ? { detail: node.detail } : {}),
+    ...(node.progress !== undefined ? { progress: node.progress } : {}),
     ...(node.result !== undefined ? { result: node.result } : {}),
     ...(node.error !== undefined ? { error: node.error } : {}),
     ...(node.durationMs !== undefined ? { durationMs: node.durationMs } : {}),

@@ -91,7 +91,12 @@ describe("reconnect — store replay idempotency", () => {
     });
     chat.addToolCall({ callId: "c1", name: "search", args: { q: 1 } });
     chat.acknowledgeToolCall("c1");
-    chat.runToolCall("c1");
+    chat.applyToolStatus({
+      callId: "c1",
+      name: "search",
+      args: { q: 1 },
+      status: "running",
+    });
     chat.completeToolCall({
       callId: "c1",
       ok: true,
@@ -105,7 +110,7 @@ describe("reconnect — store replay idempotency", () => {
     const card = useChatStore.getState().items["c1"];
     expect(card?.kind).toBe("tool");
     if (card?.kind !== "tool") return;
-    expect(card.status).toBe("completed");
+    expect(card.status).toBe("succeeded");
     expect(card.args).toEqual({ q: 1 }); // not clobbered by replay
   });
 

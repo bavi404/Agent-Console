@@ -1,17 +1,24 @@
 import { create } from "zustand";
 import type { ChatRole } from "@/protocol/types";
+import {
+  isInFlightToolStatus,
+  mergeToolStatus,
+  shouldApplyToolStatus,
+  toolStatusFromResult,
+  type ToolStatus,
+} from "@/protocol/toolStatus";
 
 /**
  * Agent trace timeline store.
  *
  * Two node kinds live in one ordered list:
  *   - message: a batched view of a token stream ("Streamed 42 tokens").
- *   - tool:    a tool call linked to its result by callId (one node, updated
- *              in place from running -> completed/error).
+ *   - tool:    a tool call keyed by callId (one node, updated in place as the
+ *              server reports queued -> running -> succeeded/failed/cancelled).
  *
  * Performance contract — the timeline must not re-render the whole list when
  * tokens arrive. We split state into:
- *   - `items`  : volatile node data (token counts, text, tool phase). Mutated
+ *   - `items`  : volatile node data (token counts, text, tool status). Mutated
  *                frequently; subscribed to per-row so only the changed row
  *                re-renders.
  *   - `order`/`index`: structural data (which rows exist, their searchable
@@ -19,7 +26,6 @@ import type { ChatRole } from "@/protocol/types";
  *                subscribes to these, so token syncs never invalidate it.
  */
 
-export type ToolPhase = "running" | "completed" | "error";
 export type TraceKind = "message" | "tool";
 
 export interface MessageNode {
@@ -38,7 +44,9 @@ export interface ToolNode {
   seq: number;
   name: string;
   args: unknown;
-  phase: ToolPhase;
+  status: ToolStatus;
+  detail?: string;
+  progress?: number;
   result?: unknown;
   error?: string;
   durationMs?: number;
@@ -60,6 +68,47 @@ function searchSnippet(value: unknown): string {
   } catch {
     return "";
   }
+}
+
+/** Searchable text for a tool node: name, status, args, and outcome. */
+function toolIndexText(node: ToolNode): string {
+  const outcome =
+    node.status === "failed"
+      ? searchSnippet(node.error)
+      : node.result !== undefined
+        ? searchSnippet(node.result)
+        : "";
+  return `${node.name} ${node.status} ${searchSnippet(node.args)} ${outcome}`
+    .trim()
+    .toLowerCase();
+}
+
+/** Insert a new tool node (structural: order + index change). */
+function withToolNode(
+  state: TimelineState,
+  node: ToolNode,
+): Partial<TimelineState> {
+  return {
+    order: [...state.order, node.id],
+    items: { ...state.items, [node.id]: node },
+    index: { ...state.index, [node.id]: { kind: "tool", text: toolIndexText(node) } },
+  };
+}
+
+/** Replace an existing tool node; the index is refreshed only on status change. */
+function replaceToolNode(
+  state: TimelineState,
+  prev: ToolNode,
+  node: ToolNode,
+): Partial<TimelineState> {
+  const items = { ...state.items, [node.id]: node };
+  if (prev.status === node.status && prev.result === node.result) {
+    return { items }; // progress tick: keep the panel referentially stable
+  }
+  return {
+    items,
+    index: { ...state.index, [node.id]: { kind: "tool", text: toolIndexText(node) } },
+  };
 }
 
 interface TimelineState {
@@ -88,6 +137,15 @@ interface TimelineState {
     callId: string;
     name: string;
     args: unknown;
+    seq: number;
+  }) => void;
+  applyToolStatus: (input: {
+    callId: string;
+    name: string;
+    args: unknown;
+    status: ToolStatus;
+    detail?: string;
+    progress?: number;
     seq: number;
   }) => void;
   applyToolResult: (input: {
@@ -184,49 +242,53 @@ export const useTimelineStore = create<TimelineState>((set) => ({
   applyToolCall: ({ callId, name, args, seq }) =>
     set((state) => {
       if (state.items[callId]) return state; // link target already exists
-      const node: ToolNode = {
+      return withToolNode(state, {
         id: callId,
         kind: "tool",
         seq,
         name,
         args,
-        phase: "running",
-      };
-      return {
-        order: [...state.order, callId],
-        items: { ...state.items, [callId]: node },
-        index: {
-          ...state.index,
-          [callId]: {
-            kind: "tool",
-            text: `${name} ${searchSnippet(args)}`.toLowerCase(),
-          },
-        },
-      };
+        status: "queued",
+      });
+    }),
+
+  applyToolStatus: (input) =>
+    set((state) => {
+      const node = state.items[input.callId];
+      if (!node) {
+        const created: ToolNode = {
+          id: input.callId,
+          kind: "tool",
+          seq: input.seq,
+          name: input.name,
+          args: input.args,
+          status: input.status,
+        };
+        return withToolNode(state, mergeToolStatus(created, input));
+      }
+      if (node.kind !== "tool" || !shouldApplyToolStatus(node, input)) {
+        return state;
+      }
+      return replaceToolNode(state, node, mergeToolStatus(node, input));
     }),
 
   applyToolResult: ({ callId, ok, result, error, durationMs }) =>
     set((state) => {
       const node = state.items[callId];
       if (!node || node.kind !== "tool") return state;
+      if (node.status === "cancelled" || node.durationMs !== undefined) {
+        return state; // replayed result, or result for a cancelled call
+      }
       const updated: ToolNode = {
         ...node,
-        phase: ok ? "completed" : "error",
+        status: isInFlightToolStatus(node.status)
+          ? toolStatusFromResult(ok)
+          : node.status,
         result,
         ...(error !== undefined ? { error } : {}),
         durationMs,
       };
-      return {
-        items: { ...state.items, [callId]: updated },
-        index: {
-          ...state.index,
-          [callId]: {
-            kind: "tool",
-            text:
-              `${node.name} ${searchSnippet(node.args)} ${searchSnippet(ok ? result : error)}`.toLowerCase(),
-          },
-        },
-      };
+      return replaceToolNode(state, node, updated);
     }),
 
   toggleExpanded: (id) =>

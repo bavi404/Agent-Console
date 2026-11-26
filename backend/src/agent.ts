@@ -4,8 +4,11 @@
  * For one user message:
  *   1. Ask the provider for a turn.
  *   2. Stream text as TOKEN frames (index increments per delta).
- *   3. If the model requests tools, emit TOOL_CALL, run the tool, emit
- *      TOOL_RESULT and a CONTEXT_SNAPSHOT, then loop again with the results.
+ *   3. If the model requests tools, announce every call up front with TOOL_CALL
+ *      (status "queued"), then run them one by one: TOOL_STATUS "running" (plus
+ *      any progress the tool reports), TOOL_RESULT, and a CONTEXT_SNAPSHOT.
+ *      Loop again with the results. Calls requested on the final allowed round
+ *      are not executed — they are marked TOOL_STATUS "cancelled".
  *   4. When the model produces text with no further tool calls, STREAM_END.
  *
  * The `seq` numbering and RESUME log live in Session, so a mid-answer reconnect
@@ -13,7 +16,8 @@
  */
 import { Session } from "./protocol.js";
 import type { Provider, ChatTurn } from "./providers/index.js";
-import { TOOLS, TOOLS_BY_NAME } from "./tools.js";
+import { TOOLS, TOOLS_BY_NAME, type ToolProgress } from "./tools.js";
+import type { ToolStatus } from "./protocol.js";
 
 const SYSTEM_PROMPT = `You are a helpful agent embedded in a developer console.
 You can call tools when they help answer accurately:
@@ -22,6 +26,12 @@ You can call tools when they help answer accurately:
 Prefer calling a tool over guessing. After using tools, give a concise final answer.`;
 
 const MAX_TOOL_ROUNDS = 4;
+
+interface PendingToolCall {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+}
 
 export class Agent {
   private readonly history: ChatTurn[] = [
@@ -46,8 +56,7 @@ export class Agent {
     let assistantText = "";
 
     for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
-      const pendingToolCalls: { id: string; name: string; args: Record<string, unknown> }[] =
-        [];
+      const pendingToolCalls: PendingToolCall[] = [];
 
       let stream;
       try {
@@ -91,7 +100,28 @@ export class Agent {
         return;
       }
 
-      // Run each requested tool, emit lifecycle frames, feed results back.
+      // Announce every requested call first so the console shows the whole
+      // batch as "queued", then run them in order.
+      for (const call of pendingToolCalls) {
+        this.session.emit({
+          type: "TOOL_CALL",
+          callId: call.id,
+          name: call.name,
+          args: call.args,
+        });
+      }
+
+      // On the last allowed round there is no further model turn to consume
+      // results, so don't execute — report the calls as cancelled instead.
+      if (round === MAX_TOOL_ROUNDS - 1) {
+        for (const call of pendingToolCalls) {
+          this.emitToolStatus(call, "cancelled", {
+            detail: "Tool round limit reached",
+          });
+        }
+        break;
+      }
+
       for (const call of pendingToolCalls) {
         await this.runTool(call);
       }
@@ -101,17 +131,30 @@ export class Agent {
     this.session.emit({ type: "STREAM_END", messageId, reason: "complete" });
   }
 
-  private async runTool(call: {
-    id: string;
-    name: string;
-    args: Record<string, unknown>;
-  }): Promise<void> {
+  /**
+   * Emit an explicit, self-describing TOOL_STATUS frame for a call. Progress
+   * is clamped to [0, 1] because the client rejects out-of-range frames.
+   */
+  private emitToolStatus(
+    call: PendingToolCall,
+    status: ToolStatus,
+    { detail, progress }: ToolProgress = {},
+  ): void {
     this.session.emit({
-      type: "TOOL_CALL",
+      type: "TOOL_STATUS",
       callId: call.id,
       name: call.name,
       args: call.args,
+      status,
+      ...(detail !== undefined ? { detail } : {}),
+      ...(progress !== undefined && Number.isFinite(progress)
+        ? { progress: Math.min(1, Math.max(0, progress)) }
+        : {}),
     });
+  }
+
+  private async runTool(call: PendingToolCall): Promise<void> {
+    this.emitToolStatus(call, "running");
 
     const tool = TOOLS_BY_NAME[call.name];
     const started = Date.now();
@@ -135,7 +178,9 @@ export class Agent {
     }
 
     try {
-      const result = await tool.run(call.args);
+      const result = await tool.run(call.args, {
+        report: (update) => this.emitToolStatus(call, "running", update),
+      });
       const durationMs = Date.now() - started;
       this.session.emit({
         type: "TOOL_RESULT",

@@ -6,7 +6,7 @@
  *   2. produces a final text answer.
  *
  * Verifies the emitted wire frames are well-formed, strictly seq-ordered, and
- * follow the TOKEN/TOOL_CALL/TOOL_RESULT/STREAM_END lifecycle the frontend
+ * follow the TOKEN/TOOL_CALL/TOOL_STATUS/TOOL_RESULT/STREAM_END lifecycle the frontend
  * expects. Run with: npm run smoke
  */
 import { Session, type ServerEvent } from "./protocol.js";
@@ -64,6 +64,24 @@ async function main(): Promise<void> {
   const types = events.map((e) => e.type);
   assert(types.includes("TOOL_CALL"), "emitted a TOOL_CALL");
   assert(types.includes("TOOL_RESULT"), "emitted a TOOL_RESULT");
+
+  // Explicit lifecycle: TOOL_CALL (queued) → TOOL_STATUS running → TOOL_RESULT.
+  const callIdx = types.indexOf("TOOL_CALL");
+  const runningIdx = events.findIndex(
+    (e) => e.type === "TOOL_STATUS" && e.status === "running",
+  );
+  const resultIdx = types.indexOf("TOOL_RESULT");
+  assert(
+    callIdx >= 0 && callIdx < runningIdx && runningIdx < resultIdx,
+    "TOOL_CALL → TOOL_STATUS(running) → TOOL_RESULT ordering",
+  );
+  const running = events[runningIdx];
+  assert(
+    running?.type === "TOOL_STATUS" &&
+      running.name === "calculator" &&
+      (running.args as { expression?: string }).expression === "2*(3+4)",
+    "TOOL_STATUS carries tool name and args",
+  );
   assert(types.includes("STREAM_END"), "emitted STREAM_END");
 
   const toolResult = events.find((e) => e.type === "TOOL_RESULT");

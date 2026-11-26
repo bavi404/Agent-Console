@@ -31,6 +31,7 @@ import {
   type MalformedHeartbeat,
 } from "./heartbeatManager";
 import { WebSocketStateMachine } from "./stateMachine";
+import { isTerminalToolStatus } from "./toolStatus";
 import type { WsSnapshot } from "./stateMachine";
 import { reconnectDelayMs } from "../lib/reconnectBackoff";
 import type { SkippedGap } from "./reorderBuffer";
@@ -531,6 +532,14 @@ export class WebSocketManager {
         break;
       case "TOOL_RESULT":
         this.machine.send({ type: "TOOL_RESULT" });
+        break;
+      case "TOOL_STATUS":
+        // A terminal status (notably "cancelled", which has no TOOL_RESULT)
+        // ends the pending round-trip. A later TOOL_RESULT is then an illegal
+        // transition from Connected and is ignored by the FSM.
+        if (isTerminalToolStatus(event.status)) {
+          this.machine.send({ type: "TOOL_RESULT" });
+        }
         break;
       case "ERROR":
         if (event.fatal) {

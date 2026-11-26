@@ -51,6 +51,26 @@ export interface ToolResultEvent extends ServerBase {
   durationMs: number;
 }
 
+/** Mirrors protocol/toolStatus.ts on the frontend. Statuses only move forward. */
+export type ToolStatus =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
+/** Explicit, self-describing execution-status update for a tool call. */
+export interface ToolStatusEvent extends ServerBase {
+  type: "TOOL_STATUS";
+  callId: string;
+  name: string;
+  args: unknown;
+  status: ToolStatus;
+  detail?: string;
+  /** Completion fraction in [0, 1]. */
+  progress?: number;
+}
+
 export interface StreamEndEvent extends ServerBase {
   type: "STREAM_END";
   messageId: string;
@@ -78,6 +98,7 @@ export type ServerEvent =
   | TokenEvent
   | ToolCallEvent
   | ToolResultEvent
+  | ToolStatusEvent
   | StreamEndEvent
   | ContextSnapshotEvent
   | PingEvent
@@ -88,6 +109,7 @@ type Frame =
   | Omit<TokenEvent, "v" | "seq" | "ts">
   | Omit<ToolCallEvent, "v" | "seq" | "ts">
   | Omit<ToolResultEvent, "v" | "seq" | "ts">
+  | Omit<ToolStatusEvent, "v" | "seq" | "ts">
   | Omit<StreamEndEvent, "v" | "seq" | "ts">
   | Omit<ContextSnapshotEvent, "v" | "seq" | "ts">
   | Omit<PingEvent, "v" | "seq" | "ts">
