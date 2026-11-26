@@ -5,7 +5,9 @@
  *   1. Ask the provider for a turn.
  *   2. Stream text as TOKEN frames (index increments per delta).
  *   3. If the model requests tools, announce every call up front with TOOL_CALL
- *      (status "queued"), then run them one by one: TOOL_STATUS "running" (plus
+ *      (status "queued"), then check each against the tool policy. A denied
+ *      call gets TOOL_STATUS "denied" (reason + rule) and never executes; an
+ *      allowed one runs: TOOL_STATUS "running" (plus
  *      any progress the tool reports), TOOL_RESULT, and a CONTEXT_SNAPSHOT.
  *      Loop again with the results. Calls requested on the final allowed round
  *      are not executed — they are marked TOOL_STATUS "cancelled".
@@ -18,6 +20,7 @@ import { Session } from "./protocol.js";
 import type { Provider, ChatTurn } from "./providers/index.js";
 import { TOOLS, TOOLS_BY_NAME, type ToolProgress } from "./tools.js";
 import type { ToolStatus } from "./protocol.js";
+import { createToolPolicy, type PolicyEngine } from "./policy/index.js";
 
 const SYSTEM_PROMPT = `You are a helpful agent embedded in a developer console.
 You can call tools when they help answer accurately:
@@ -41,10 +44,13 @@ export class Agent {
   constructor(
     private readonly session: Session,
     private readonly provider: Provider,
+    /** Checked before every tool execution. Per-agent: holds turn counters. */
+    private readonly policy: PolicyEngine = createToolPolicy(TOOLS),
   ) {}
 
   async handleUserMessage(text: string): Promise<void> {
     this.history.push({ role: "user", content: text });
+    this.policy.startTurn();
     this.session.snapshotContext({
       turns: nextTurns(this.session.context.turns),
       lastQuery: text,
@@ -138,7 +144,11 @@ export class Agent {
   private emitToolStatus(
     call: PendingToolCall,
     status: ToolStatus,
-    { detail, progress }: ToolProgress = {},
+    {
+      detail,
+      progress,
+      policyRule,
+    }: ToolProgress & { policyRule?: string } = {},
   ): void {
     this.session.emit({
       type: "TOOL_STATUS",
@@ -147,6 +157,7 @@ export class Agent {
       args: call.args,
       status,
       ...(detail !== undefined ? { detail } : {}),
+      ...(policyRule !== undefined ? { policyRule } : {}),
       ...(progress !== undefined && Number.isFinite(progress)
         ? { progress: Math.min(1, Math.max(0, progress)) }
         : {}),
@@ -154,6 +165,30 @@ export class Agent {
   }
 
   private async runTool(call: PendingToolCall): Promise<void> {
+    // Policy gate: nothing executes unless every rule allows it.
+    const decision = this.policy.authorize(call);
+    if (!decision.allowed) {
+      this.emitToolStatus(call, "denied", {
+        detail: decision.reason,
+        policyRule: decision.rule,
+      });
+      this.session.snapshotContext({
+        lastPolicyDenial: {
+          tool: call.name,
+          rule: decision.rule,
+          reason: decision.reason,
+        },
+      });
+      // Tell the model, so it can adapt instead of retrying blindly.
+      this.history.push({
+        role: "tool",
+        content: `Error: blocked by policy (${decision.rule}): ${decision.reason}`,
+        toolCallId: call.id,
+        toolName: call.name,
+      });
+      return;
+    }
+
     this.emitToolStatus(call, "running");
 
     const tool = TOOLS_BY_NAME[call.name];

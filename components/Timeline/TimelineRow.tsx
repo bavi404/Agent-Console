@@ -138,6 +138,7 @@ function toCardView(node: ToolNode): ToolCardView {
     status: node.status,
     ...(node.detail !== undefined ? { detail: node.detail } : {}),
     ...(node.progress !== undefined ? { progress: node.progress } : {}),
+    ...(node.policyRule !== undefined ? { policyRule: node.policyRule } : {}),
     ...(node.result !== undefined ? { result: node.result } : {}),
     ...(node.error !== undefined ? { error: node.error } : {}),
     ...(node.durationMs !== undefined ? { durationMs: node.durationMs } : {}),

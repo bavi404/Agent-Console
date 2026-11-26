@@ -39,6 +39,7 @@ interface ChatActions {
     status: ToolStatus;
     detail?: string;
     progress?: number;
+    policyRule?: string;
   }) => void;
   completeToolCall: (event: {
     callId: string;

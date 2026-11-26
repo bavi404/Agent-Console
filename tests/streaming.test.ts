@@ -222,6 +222,27 @@ describe("tool cards — explicit execution status", () => {
     expect(s).toBe(ref);
   });
 
+  it("a policy denial is terminal, keeps its rule, and resumes the stream", () => {
+    let s = emptyTranscript();
+    s = applyToken(s, tok("m1", 0, "x"));
+    s = addToolCall(s, { callId: "c1", name: "shell", args: {}, now: 0 });
+    expect(msg(s, "m1").status).toBe("paused");
+    s = applyToolStatus(s, {
+      ...status("c1", "denied", { name: "shell", detail: "not allowed" }),
+      policyRule: "tool-access",
+    });
+    expect(card(s, "c1")).toMatchObject({
+      status: "denied",
+      detail: "not allowed",
+      policyRule: "tool-access",
+    });
+    expect(msg(s, "m1").status).toBe("streaming");
+    const ref = s;
+    s = applyToolStatus(s, status("c1", "running", { name: "shell" }));
+    s = completeToolCall(s, { callId: "c1", ok: true, durationMs: 1 });
+    expect(s).toBe(ref);
+  });
+
   it("a terminal TOOL_STATUS keeps its status when TOOL_RESULT attaches data", () => {
     let s = emptyTranscript();
     s = addToolCall(s, { callId: "c1", name: "f", args: 1, now: 0 });

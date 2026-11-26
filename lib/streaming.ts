@@ -33,6 +33,7 @@
 import type { ChatRole } from "@/protocol/types";
 import {
   isInFlightToolStatus,
+  isNotExecutedToolStatus,
   isTerminalToolStatus,
   mergeToolStatus,
   shouldApplyToolStatus,
@@ -74,6 +75,8 @@ export interface ToolCard {
   detail?: string;
   /** Latest progress fraction in [0, 1] from TOOL_STATUS. */
   progress?: number;
+  /** For "denied": the policy rule that blocked the call. */
+  policyRule?: string;
   result?: unknown;
   error?: string;
   durationMs?: number;
@@ -305,6 +308,7 @@ export interface ToolStatusInput {
   detail?: string;
   progress?: number;
   now: number;
+  policyRule?: string;
 }
 
 /**
@@ -364,8 +368,9 @@ export function completeToolCall(
 ): TranscriptState {
   const tool = getTool(state, input.callId);
   if (!tool) return state;
-  if (tool.status === "cancelled" || tool.durationMs !== undefined)
+  if (isNotExecutedToolStatus(tool.status) || tool.durationMs !== undefined) {
     return state;
+  }
   const updated: ToolCard = {
     ...tool,
     status: isTerminalToolStatus(tool.status)

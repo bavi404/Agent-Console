@@ -6,7 +6,8 @@
  *
  *   queued ──▶ running ──▶ succeeded
  *      │          │    └──▶ failed
- *      └──────────┴───────▶ cancelled
+ *      ├──────────┴───────▶ cancelled
+ *      └──────────────────▶ denied      (blocked by server-side tool policy)
  *
  * Status is owned by the server: the client never invents "running". The
  * lifecycle is monotonic — a status may only move forward, and a terminal status
@@ -19,6 +20,7 @@ export const TOOL_STATUSES = [
   "succeeded",
   "failed",
   "cancelled",
+  "denied",
 ] as const;
 
 export type ToolStatus = (typeof TOOL_STATUSES)[number];
@@ -32,6 +34,7 @@ const RANK: Record<ToolStatus, number> = {
   succeeded: 2,
   failed: 2,
   cancelled: 2,
+  denied: 2,
 };
 
 /** Narrow an unknown value (e.g. straight off the wire) to a ToolStatus. */
@@ -42,6 +45,14 @@ export function isToolStatus(value: unknown): value is ToolStatus {
 /** Terminal statuses end the lifecycle; no further transitions are accepted. */
 export function isTerminalToolStatus(status: ToolStatus): boolean {
   return RANK[status] === RANK.succeeded;
+}
+
+/**
+ * Terminal statuses reached without the tool ever executing ("cancelled",
+ * "denied"). Such calls have no output, so a later TOOL_RESULT is ignored.
+ */
+export function isNotExecutedToolStatus(status: ToolStatus): boolean {
+  return status === "cancelled" || status === "denied";
 }
 
 /** In flight = announced but not yet finished. */
@@ -76,6 +87,8 @@ export interface ToolStatusFields {
   status: ToolStatus;
   detail?: string;
   progress?: number;
+  /** For "denied": id of the policy rule that blocked the call. */
+  policyRule?: string;
 }
 
 /**
@@ -98,8 +111,8 @@ export function shouldApplyToolStatus(
 }
 
 /**
- * Return a copy of `node` carrying `update`'s status, detail and progress.
- * Detail/progress absent from the update are cleared so stale notes never
+ * Return a copy of `node` carrying `update`'s status, detail, progress and
+ * policy rule. Fields absent from the update are cleared so stale notes never
  * outlive the status they described. Progress is normalized to [0, 1].
  */
 export function mergeToolStatus<T extends ToolStatusFields>(
@@ -109,8 +122,10 @@ export function mergeToolStatus<T extends ToolStatusFields>(
   const merged: T = { ...node, status: update.status };
   delete merged.detail;
   delete merged.progress;
+  delete merged.policyRule;
   const progress = normalizeProgress(update.progress);
   if (update.detail !== undefined) merged.detail = update.detail;
   if (progress !== undefined) merged.progress = progress;
+  if (update.policyRule !== undefined) merged.policyRule = update.policyRule;
   return merged;
 }

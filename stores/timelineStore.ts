@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { ChatRole } from "@/protocol/types";
 import {
   isInFlightToolStatus,
+  isNotExecutedToolStatus,
   mergeToolStatus,
   shouldApplyToolStatus,
   toolStatusFromResult,
@@ -47,6 +48,7 @@ export interface ToolNode {
   status: ToolStatus;
   detail?: string;
   progress?: number;
+  policyRule?: string;
   result?: unknown;
   error?: string;
   durationMs?: number;
@@ -75,9 +77,11 @@ function toolIndexText(node: ToolNode): string {
   const outcome =
     node.status === "failed"
       ? searchSnippet(node.error)
-      : node.result !== undefined
-        ? searchSnippet(node.result)
-        : "";
+      : node.status === "denied"
+        ? `${node.policyRule ?? ""} ${node.detail ?? ""}`
+        : node.result !== undefined
+          ? searchSnippet(node.result)
+          : "";
   return `${node.name} ${node.status} ${searchSnippet(node.args)} ${outcome}`
     .trim()
     .toLowerCase();
@@ -146,6 +150,7 @@ interface TimelineState {
     status: ToolStatus;
     detail?: string;
     progress?: number;
+    policyRule?: string;
     seq: number;
   }) => void;
   applyToolResult: (input: {
@@ -276,8 +281,8 @@ export const useTimelineStore = create<TimelineState>((set) => ({
     set((state) => {
       const node = state.items[callId];
       if (!node || node.kind !== "tool") return state;
-      if (node.status === "cancelled" || node.durationMs !== undefined) {
-        return state; // replayed result, or result for a cancelled call
+      if (isNotExecutedToolStatus(node.status) || node.durationMs !== undefined) {
+        return state; // replayed result, or result for a call that never ran
       }
       const updated: ToolNode = {
         ...node,

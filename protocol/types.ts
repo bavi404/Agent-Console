@@ -109,6 +109,11 @@ export interface ToolStatusEvent extends ServerBase {
   detail?: string;
   /** Optional completion fraction in [0, 1]. */
   progress?: number;
+  /**
+   * For status "denied": id of the server-side policy rule that blocked the
+   * call (e.g. "tool-access"). `detail` carries the human-readable reason.
+   */
+  policyRule?: string;
 }
 
 /** A message stream finished. */

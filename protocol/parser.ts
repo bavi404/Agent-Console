@@ -84,6 +84,7 @@ function validatePayload(
       if (!isToolStatus(o.status)) return "status";
       if (o.detail !== undefined && !str("detail")) return "detail";
       if (o.progress !== undefined && !isFraction(o.progress)) return "progress";
+      if (o.policyRule !== undefined && !str("policyRule")) return "policyRule";
       return null;
     case ServerEventType.STREAM_END:
       if (!str("messageId")) return "messageId";

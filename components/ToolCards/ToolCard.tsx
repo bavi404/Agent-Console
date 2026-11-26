@@ -21,6 +21,8 @@ export interface ToolCardView {
   acknowledged?: boolean;
   detail?: string;
   progress?: number;
+  /** For "denied": the policy rule that blocked the call. */
+  policyRule?: string;
   result?: unknown;
   error?: string;
   durationMs?: number;
@@ -96,6 +98,32 @@ function ToolProgress({
   );
 }
 
+/** Why the server's tool policy refused to run this call. */
+function PolicyDenial({
+  reason,
+  rule,
+}: {
+  reason: string | undefined;
+  rule: string | undefined;
+}) {
+  return (
+    <div>
+      <div className="mb-1 flex items-center gap-2 text-[10px] uppercase tracking-wide text-err">
+        Blocked by policy
+        {rule !== undefined && (
+          <code className="rounded bg-err/10 px-1 py-0.5 normal-case tracking-normal">
+            {rule}
+          </code>
+        )}
+      </div>
+      <div className="rounded-md border border-err/30 bg-err/5 p-2.5 text-xs text-err">
+        {reason ?? "The server's tool policy did not allow this call."} The tool
+        was not executed.
+      </div>
+    </div>
+  );
+}
+
 /**
  * Tool invocation card.
  *
@@ -156,6 +184,8 @@ export const ToolCard = memo(
               {tool.error ?? "Unknown error"}
             </pre>
           </div>
+        ) : tool.status === "denied" ? (
+          <PolicyDenial reason={tool.detail} rule={tool.policyRule} />
         ) : tool.status === "cancelled" ? (
           <div className="text-xs text-ink-dim">
             Cancelled before completion
@@ -179,6 +209,7 @@ export const ToolCard = memo(
     prev.tool.acknowledged === next.tool.acknowledged &&
     prev.tool.detail === next.tool.detail &&
     prev.tool.progress === next.tool.progress &&
+    prev.tool.policyRule === next.tool.policyRule &&
     prev.tool.args === next.tool.args &&
     prev.tool.result === next.tool.result &&
     prev.tool.error === next.tool.error &&

@@ -57,7 +57,8 @@ export type ToolStatus =
   | "running"
   | "succeeded"
   | "failed"
-  | "cancelled";
+  | "cancelled"
+  | "denied";
 
 /** Explicit, self-describing execution-status update for a tool call. */
 export interface ToolStatusEvent extends ServerBase {
@@ -69,6 +70,8 @@ export interface ToolStatusEvent extends ServerBase {
   detail?: string;
   /** Completion fraction in [0, 1]. */
   progress?: number;
+  /** For status "denied": id of the policy rule that blocked the call. */
+  policyRule?: string;
 }
 
 export interface StreamEndEvent extends ServerBase {

@@ -4,6 +4,7 @@
  * Implements WebSocketLike and simulates a real agent session with:
  *   - out-of-order token delivery (reorder buffer exercise)
  *   - explicit TOOL_STATUS updates (queued → running with progress → result)
+ *   - a policy denial (TOOL_STATUS "denied") for the second scripted prompt
  *   - PING heartbeats
  *   - RESUME replay of all events after `lastSeq` (reconnect exercise)
  *
@@ -21,8 +22,12 @@ import type { WebSocketLike } from "@/protocol/webSocketManager";
 import type { ToolStatus } from "@/protocol/toolStatus";
 import {
   DEMO_INTRO,
+  DEMO_PROMPT,
   DEMO_WIKI_RESULT,
+  POLICY_DEMO_DENIAL,
+  POLICY_DEMO_PROMPT,
   isDemoPrompt,
+  isPolicyDemoPrompt,
 } from "@/lib/demoScenario";
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown
@@ -191,7 +196,7 @@ export class MockAgentSocket implements WebSocketLike {
   private toolStatus(
     call: { callId: string; name: string; args: unknown },
     status: ToolStatus,
-    extra: { detail?: string; progress?: number } = {},
+    extra: { detail?: string; progress?: number; policyRule?: string } = {},
   ): Frame {
     return {
       type: "TOOL_STATUS",
@@ -230,6 +235,10 @@ export class MockAgentSocket implements WebSocketLike {
   private runReply(prompt: string): void {
     if (isDemoPrompt(prompt)) {
       this.runDemoScenario(prompt);
+      return;
+    }
+    if (isPolicyDemoPrompt(prompt)) {
+      this.runPolicyScenario(prompt);
       return;
     }
     this.runDemoNudge();
@@ -378,6 +387,75 @@ export class MockAgentSocket implements WebSocketLike {
     );
   }
 
+  /**
+   * Scripted policy flow: the agent requests a tool the server's policy does
+   * not allow → TOOL_STATUS "denied" (no execution, no TOOL_RESULT) → the
+   * agent explains and offers what it can do instead.
+   */
+  private runPolicyScenario(prompt: string): void {
+    const base = Date.now();
+    const msgId = `m-${base}`;
+    const call = {
+      callId: `call-${base}-shell`,
+      name: POLICY_DEMO_DENIAL.tool,
+      args: { ...POLICY_DEMO_DENIAL.args },
+    };
+
+    this.context = {
+      ...this.context,
+      turns: Number(this.context.turns ?? 0) + 1,
+      lastQuery: prompt,
+    };
+
+    this.deliver(this.token(msgId, "assistant", "I'll clear the temp directory. ", 0), 400);
+    this.deliver({ type: "TOOL_CALL", seq: this.session.nextSeq(), ...call }, 1100);
+    this.deliver(
+      this.toolStatus(call, "denied", {
+        detail: POLICY_DEMO_DENIAL.reason,
+        policyRule: POLICY_DEMO_DENIAL.rule,
+      }),
+      1700,
+    );
+
+    this.context = {
+      ...this.context,
+      lastPolicyDenial: {
+        tool: POLICY_DEMO_DENIAL.tool,
+        rule: POLICY_DEMO_DENIAL.rule,
+        reason: POLICY_DEMO_DENIAL.reason,
+      },
+    };
+    this.snapshot(1800);
+
+    this.deliver(
+      this.token(
+        msgId,
+        "assistant",
+        "That tool is blocked by the server's policy, so nothing was run. ",
+        1,
+      ),
+      2500,
+    );
+    this.deliver(
+      this.token(
+        msgId,
+        "assistant",
+        "I can only run calculations and Wikipedia lookups here.",
+        2,
+      ),
+      3200,
+    );
+    this.deliver(
+      {
+        type: "STREAM_END",
+        seq: this.session.nextSeq(),
+        messageId: msgId,
+        reason: "complete",
+      },
+      3700,
+    );
+  }
+
   /** Gentle redirect when the user types something other than the demo prompt. */
   private runDemoNudge(): void {
     const msgId = `m-nudge-${Date.now()}`;
@@ -385,7 +463,7 @@ export class MockAgentSocket implements WebSocketLike {
       this.token(
         msgId,
         "assistant",
-        'Try: "Who was Ada Lovelace and what is 2^20?"',
+        `Try: "${DEMO_PROMPT}" — or see the tool policy block a call: "${POLICY_DEMO_PROMPT}"`,
         0,
       ),
       200,

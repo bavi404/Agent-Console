@@ -3,7 +3,7 @@
  *
  * One Session + one Agent per connection. Speaks the same wire protocol the
  * frontend's protocol/ layer expects, so the real agent is a drop-in for the
- * mock socket: TOKEN / TOOL_CALL / TOOL_RESULT / CONTEXT_SNAPSHOT / STREAM_END /
+ * mock socket: TOKEN / TOOL_CALL / TOOL_STATUS / TOOL_RESULT / CONTEXT_SNAPSHOT / STREAM_END /
  * PING / ERROR out; USER_MESSAGE / RESUME / PONG / TOOL_ACK in.
  *
  * Env: see .env.example. Load it however you like (e.g. `node --env-file=.env`).
@@ -12,13 +12,21 @@ import { WebSocketServer, WebSocket } from "ws";
 import { Session, parseClientMessage, type ServerEvent } from "./protocol.js";
 import { Agent } from "./agent.js";
 import { createProvider } from "./providers/index.js";
+import { TOOLS } from "./tools.js";
+import {
+  createToolPolicy,
+  policyConfigFromEnv,
+  type PolicyConfig,
+} from "./policy/index.js";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const HEARTBEAT_MS = 15000;
 
 let provider;
+let policyConfig: PolicyConfig;
 try {
   provider = createProvider();
+  policyConfig = policyConfigFromEnv(process.env);
 } catch (err) {
   console.error(
     `[fatal] ${err instanceof Error ? err.message : String(err)}`,
@@ -31,10 +39,20 @@ const wss = new WebSocketServer({ port: PORT });
 console.log(
   `[agent-console] WebSocket server on ws://localhost:${PORT} (provider: ${provider.name})`,
 );
+console.log(
+  `[agent-console] tool policy: max ${policyConfig.maxCalls} calls/turn, ` +
+    `${policyConfig.maxCallsPerTool}/tool, args ≤ ${policyConfig.maxArgChars} chars` +
+    (policyConfig.deny.length ? `, disabled: ${policyConfig.deny.join(", ")}` : ""),
+);
 
 wss.on("connection", (socket: WebSocket) => {
   const session = new Session();
-  const agent = new Agent(session, provider);
+  // One policy engine per connection: turn counters are per session.
+  const agent = new Agent(
+    session,
+    provider,
+    createToolPolicy(TOOLS, policyConfig),
+  );
   let nonce = 0;
   let busy = false;
 

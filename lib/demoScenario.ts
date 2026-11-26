@@ -31,3 +31,28 @@ export const DEMO_WIKI_RESULT = {
     "often regarded as the first computer programmer.",
   url: "https://en.wikipedia.org/wiki/Ada_Lovelace",
 };
+
+/* ------------------------- policy-denial scenario ------------------------- */
+
+/**
+ * Second scripted prompt: the agent reaches for a tool the server's policy
+ * does not allow, the call is denied before execution, and the agent adapts.
+ */
+export const POLICY_DEMO_PROMPT = "Clean up the temp files on the server.";
+
+export function isPolicyDemoPrompt(text: string): boolean {
+  const n = text.trim().toLowerCase().replace(/\s+/g, " ");
+  return (
+    n === POLICY_DEMO_PROMPT.toLowerCase() ||
+    n.includes("temp files") ||
+    n.includes("rm -rf")
+  );
+}
+
+/** Mirrors the backend's `tool-access` rule wording. */
+export const POLICY_DEMO_DENIAL = {
+  tool: "shell_exec",
+  args: { command: "rm -rf /tmp/*" },
+  rule: "tool-access",
+  reason: 'Tool "shell_exec" is not on the allowlist.',
+} as const;

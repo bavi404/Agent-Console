@@ -19,7 +19,7 @@ Zustand, and run end-to-end in Node tests. ESLint enforces the boundary.
 | Lists | `@tanstack/react-virtual` |
 | Diff | Web Worker for large context snapshots (>500 KB) |
 | Highlighting | Shiki |
-| Tests | Vitest (214 tests, >90% coverage on protocol logic) |
+| Tests | Vitest (219 tests, >90% coverage on protocol logic) |
 
 No Redux. No Context API. No AI SDK.
 
@@ -64,6 +64,11 @@ npm install
 npm run verify          # typecheck + lint + test + production build
 npm run dev             # http://localhost:3000
 ```
+
+A second scripted prompt, *"Clean up the temp files on the server."*, shows the
+**tool policy**: the agent requests `shell_exec`, the call is `denied`
+(rule `tool-access`) before it executes, and the agent explains what it can do
+instead.
 
 Within ~1 s you should see **Connected**, an intro in Chat, and revision `1` in
 Context. The input is prefilled — press **Enter** to send.
@@ -302,13 +307,14 @@ Tool execution is reported explicitly by the server. The client never infers
 
 ```
 queued ──▶ running ──▶ succeeded | failed
-   └──────────┴──────▶ cancelled
+   ├──────────┴──────▶ cancelled
+   └─────────────────▶ denied      (blocked by the server's tool policy)
 ```
 
 | Frame | Carries | Meaning |
 | ----- | ------- | ------- |
 | `TOOL_CALL` | `callId`, `name`, `args` | Tool announced; status is `queued` |
-| `TOOL_STATUS` | `callId`, `name`, `args`, `status`, `detail?`, `progress?` (0–1) | Explicit status change or progress tick |
+| `TOOL_STATUS` | `callId`, `name`, `args`, `status`, `detail?`, `progress?` (0–1), `policyRule?` | Explicit status change or progress tick |
 | `TOOL_RESULT` | `callId`, `ok`, `result?` / `error?`, `durationMs` | Output; sets `succeeded` / `failed` |
 
 `TOOL_STATUS` is self-describing. It carries the tool name and arguments, so
@@ -316,8 +322,11 @@ a client can render the call even if it is the first frame seen for that
 `callId`. Lifecycle rules live in `protocol/toolStatus.ts` and are shared by
 the chat and timeline stores. Statuses only move forward, terminal statuses
 are final, and repeated `running` frames update `detail`/`progress`. Replayed
-or late frames therefore never move a card backwards. `cancelled` has no
-`TOOL_RESULT` and ends the `ToolCallPending` FSM state on its own. `TOOL_ACK`
+or late frames therefore never move a card backwards. `cancelled` and
+`denied` mean the tool never ran. They have no `TOOL_RESULT`, a late one is
+ignored, and they end the `ToolCallPending` FSM state on their own. A
+`denied` frame carries the reason in `detail` and the rule ID in
+`policyRule`. The card shows both under **Blocked by policy**. `TOOL_ACK`
 is delivery-only: tool cards track it as a separate `acknowledged` flag, not
 as an execution status.
 
@@ -406,7 +415,7 @@ tests/         Vitest unit tests
 | `npm run build` | Production build |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run lint` | ESLint + protocol import boundary |
-| `npm test` | Vitest (214 tests) |
+| `npm test` | Vitest (219 tests) |
 | `npm run test:coverage` | Coverage with 90% thresholds on protocol logic |
 | `npm run verify` | Full pre-demo check: typecheck, lint, test, build |
 

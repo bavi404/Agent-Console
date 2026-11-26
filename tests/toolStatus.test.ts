@@ -5,6 +5,7 @@ import {
   mergeToolStatus,
   shouldApplyToolStatus,
   isInFlightToolStatus,
+  isNotExecutedToolStatus,
   isTerminalToolStatus,
   isToolStatus,
   normalizeProgress,
@@ -23,10 +24,18 @@ describe("toolStatus — lifecycle rules", () => {
   });
 
   it("classifies terminal vs in-flight", () => {
-    const terminal: ToolStatus[] = ["succeeded", "failed", "cancelled"];
+    const terminal: ToolStatus[] = [
+      "succeeded",
+      "failed",
+      "cancelled",
+      "denied",
+    ];
     for (const s of TOOL_STATUSES) {
       expect(isTerminalToolStatus(s)).toBe(terminal.includes(s));
       expect(isInFlightToolStatus(s)).toBe(!terminal.includes(s));
+      expect(isNotExecutedToolStatus(s)).toBe(
+        s === "cancelled" || s === "denied",
+      );
     }
   });
 
@@ -38,6 +47,8 @@ describe("toolStatus — lifecycle rules", () => {
     expect(canAdvanceToolStatus("running", "running")).toBe(false);
     expect(canAdvanceToolStatus("succeeded", "failed")).toBe(false);
     expect(canAdvanceToolStatus("cancelled", "succeeded")).toBe(false);
+    expect(canAdvanceToolStatus("queued", "denied")).toBe(true);
+    expect(canAdvanceToolStatus("denied", "running")).toBe(false);
   });
 
   it("maps results and normalizes progress", () => {
@@ -105,6 +116,17 @@ describe("toolStatus — update helpers", () => {
       progress: 1,
     });
     expect(node.detail).toBe("old"); // input untouched
+    const denied = mergeToolStatus(node, {
+      status: "denied",
+      detail: "not allowed",
+      policyRule: "tool-access",
+    });
+    expect(denied).toEqual({
+      id: "c1",
+      status: "denied",
+      detail: "not allowed",
+      policyRule: "tool-access",
+    });
   });
 });
 
@@ -144,10 +166,24 @@ describe("parseFrame — TOOL_STATUS", () => {
     ["detail", { detail: 5 }],
     ["progress", { progress: 1.5 }],
     ["progress", { progress: "half" }],
+    ["policyRule", { status: "denied", policyRule: 42 }],
   ])("rejects a bad %s", (field, patch) => {
     expect(parse({ ...base, ...patch })).toEqual({
       ok: false,
       error: { code: "missing_field", detail: field },
+    });
+  });
+
+  it("accepts a denied frame with its policy rule", () => {
+    const denied = parse({
+      ...base,
+      status: "denied",
+      detail: "Tool is disabled by policy.",
+      policyRule: "tool-access",
+    });
+    expect(denied.ok && denied.event).toMatchObject({
+      status: "denied",
+      policyRule: "tool-access",
     });
   });
 
@@ -220,6 +256,30 @@ describe("timelineStore — tool status", () => {
     const before = useTimelineStore.getState().items;
     t.applyToolStatus(input("running"));
     t.applyToolResult({ callId: "c1", ok: true, result: 1, durationMs: 1 });
+    expect(useTimelineStore.getState().items).toBe(before);
+  });
+
+  it("records denials with their rule and makes them searchable", () => {
+    const t = useTimelineStore.getState();
+    t.applyToolCall({ callId: "c1", name: "shell_exec", args: {}, seq: 1 });
+    t.applyToolStatus(
+      input("denied", {
+        name: "shell_exec",
+        detail: "Not on the allowlist",
+        policyRule: "tool-access",
+      }),
+    );
+    expect(tool("c1")).toMatchObject({
+      status: "denied",
+      policyRule: "tool-access",
+      detail: "Not on the allowlist",
+    });
+    const text = useTimelineStore.getState().index.c1?.text ?? "";
+    expect(text).toContain("denied");
+    expect(text).toContain("tool-access");
+    expect(text).toContain("allowlist");
+    const before = useTimelineStore.getState().items;
+    t.applyToolResult({ callId: "c1", ok: true, durationMs: 1 });
     expect(useTimelineStore.getState().items).toBe(before);
   });
 

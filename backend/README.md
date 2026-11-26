@@ -64,6 +64,7 @@ back to the mock agent.
 
 ```bash
 npm run smoke        # runs the full agent loop against a fake provider
+npm test             # policy rules, engine, config, agent integration
 npm run typecheck
 ```
 
@@ -85,6 +86,37 @@ publish progress. Each call becomes a `TOOL_STATUS` `running` frame, with
 `progress` clamped to [0, 1]. `wikipedia_lookup` uses it for its search and
 summary steps.
 
+## Tool policy
+
+Every tool call passes a policy check **before** it executes
+(`src/policy/`). A policy is an ordered list of rules. The first rule to deny
+wins, and a denied call:
+
+- never runs and gets no `TOOL_RESULT`;
+- is reported as `TOOL_STATUS` `denied`, with the reason in `detail` and the
+  rule ID in `policyRule`;
+- is fed back to the model as a tool error, so it can adapt instead of
+  retrying blindly;
+- is recorded as `lastPolicyDenial` in the context snapshot.
+
+Default rules, in evaluation order:
+
+| Rule ID | Denies when |
+| ------- | ----------- |
+| `tool-access` | the tool is not registered, or is listed in `TOOL_POLICY_DENY` |
+| `argument-size` | serialized arguments exceed `TOOL_POLICY_MAX_ARG_CHARS` (2000) |
+| `argument-schema` | a required argument is missing or blank, or has the wrong type |
+| `call-limit` | the turn already used `TOOL_POLICY_MAX_CALLS` (8) calls, or `TOOL_POLICY_MAX_CALLS_PER_TOOL` (4) for this tool |
+
+Only allowed calls count toward the limits. Counters reset on every user
+message and are kept separately for each connection. Invalid env values stop
+the server at startup.
+
+`blockedArgumentPatterns` is also available but is not in the default
+policy. It denies calls whose string arguments match a regex. To add your own
+rule, implement `PolicyRule` (`{ id, check(call, ctx) }`, returning a
+denial or `null`) and pass it in the list given to `new PolicyEngine(...)`.
+
 ## How it maps to the protocol
 
 | Model event | Wire frame |
@@ -93,6 +125,7 @@ summary steps.
 | wants a tool | `TOOL_CALL` (status `queued`; a batch is announced together) |
 | tool starts / reports progress | `TOOL_STATUS` `running` (+ `detail`, `progress`) |
 | tool finished | `TOOL_RESULT` (+ `CONTEXT_SNAPSHOT`) |
+| tool blocked by policy | `TOOL_STATUS` `denied` (+ `detail` reason, `policyRule`) — not executed |
 | tools requested on the last allowed round | `TOOL_STATUS` `cancelled` (not executed) |
 | turn complete | `STREAM_END` |
 | provider/network error | `ERROR` (non-fatal) |
